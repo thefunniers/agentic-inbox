@@ -84,9 +84,11 @@ app.use("*", async (c, next) => {
 // Must be before API routes and React Router catch-all
 const mcpHandler = EmailMCP.serve("/mcp", { binding: "EMAIL_MCP" });
 app.all("/mcp", async (c) => {
+	if (String(c.env.MCP_ENABLED) !== "true") return c.json({ error: "MCP is disabled" }, 404);
 	return mcpHandler.fetch(c.req.raw, c.env, c.executionCtx as ExecutionContext);
 });
 app.all("/mcp/*", async (c) => {
+	if (String(c.env.MCP_ENABLED) !== "true") return c.json({ error: "MCP is disabled" }, 404);
 	return mcpHandler.fetch(c.req.raw, c.env, c.executionCtx as ExecutionContext);
 });
 
@@ -111,12 +113,26 @@ app.all("*", (c) => {
 export default {
 	fetch: app.fetch,
 	async email(
-		event: { raw: ReadableStream; rawSize: number },
+		message: { raw: ReadableStream; rawSize: number; to: string; from: string; forward: (recipient: string) => Promise<unknown> },
 		env: Env,
 		ctx: ExecutionContext,
 	) {
 		try {
-			await receiveEmail(event, env, ctx);
+			// Preserve the current Tencent backup path during the cutover. The old
+			// router Worker remains deployed as the rollback target; this forwarding
+			// keeps the backup active while Agentic Inbox is the primary destination.
+			const recipient = message.to.toLowerCase();
+			const backup = recipient.endsWith("@dev.jdtogo.ai")
+				? (env.BACKUP_DEV_EMAIL || env.BACKUP_EMAIL)
+				: env.BACKUP_EMAIL;
+			if (backup) {
+				try {
+					await message.forward(backup);
+				} catch (error) {
+					console.error("Tencent backup forwarding failed:", (error as Error).message);
+				}
+			}
+			await receiveEmail(message, env, ctx);
 		} catch (e) {
 			console.error("Failed to process incoming email:", (e as Error).message, (e as Error).stack);
 			// Re-throw so Cloudflare's email routing can retry delivery or bounce the message.

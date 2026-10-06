@@ -13,9 +13,20 @@
 		// Production deploys must also define POLICY_AUD and TEAM_DOMAIN.
 		// TEAM_DOMAIN may be the base Access URL or the full /cdn-cgi/access/certs URL.
 		// The worker now fails closed outside local development if Access is not configured.
-		"DOMAINS": "example.com",
-		"EMAIL_ADDRESSES": []
+		"DOMAINS": "jdtogo.ai,dev.jdtogo.ai",
+		"EMAIL_ADDRESSES": [],
+		"MCP_ENABLED": "false",
+		// Inbound copies stay on the verified Tencent mailboxes.
+		// @jdtogo.ai -> apply@jdtogo.com; @dev.jdtogo.ai -> dev@jdtogo.com.
+		"BACKUP_EMAIL": "apply@jdtogo.com",
+		"BACKUP_DEV_EMAIL": "dev@jdtogo.com"
 	},
+	"routes": [
+		{
+			"pattern": "inbox.jdtogo.ai",
+			"custom_domain": true
+		}
+	],
 	"send_email": [
 		{
 			"name": "EMAIL",
@@ -26,7 +37,7 @@
 		{
 			"binding": "BUCKET",
 			"bucket_name": "agentic-inbox",
-			"preview_bucket_name": "agentic-inbox"
+			"preview_bucket_name": "agentic-inbox-preview"
 		}
 	],
 	"ai": {
