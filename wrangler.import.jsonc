@@ -1,0 +1,35 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "agentic-inbox-import",
+	"compatibility_date": "2025-11-28",
+	"compatibility_flags": ["nodejs_compat"],
+	"main": "workers/import-sink.ts",
+	// Started locally by scripts/import-history.mjs. Do not deploy this file:
+	// it is not the inbox worker and it must not receive mail.
+	"workers_dev": false,
+	"vars": {
+		"DOMAINS": "jdtogo.ai,dev.jdtogo.ai",
+		"TARGET": "preview"
+	},
+	"r2_buckets": [
+		{
+			"binding": "BUCKET",
+			"bucket_name": "agentic-inbox-preview",
+			"remote": true
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "MAILBOX",
+				"class_name": "MailboxDO"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["MailboxDO"]
+		}
+	]
+}

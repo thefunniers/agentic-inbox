@@ -20,6 +20,7 @@ import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
+import { ensureMailbox, isManagedMailboxAddress } from "./lib/provision-mailbox";
 
 type AppContext = Context<MailboxContext>;
 
@@ -328,41 +329,6 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/attachments/:attachmentId"
 // -- Receive inbound email ------------------------------------------
 
 const MAX_EMAIL_SIZE = 25 * 1024 * 1024;
-
-function configuredDomains(env: Env): string[] {
-	return (env.DOMAINS || "")
-		.split(",")
-		.map((domain) => domain.trim().toLowerCase())
-		.filter(Boolean);
-}
-
-function isManagedMailboxAddress(address: string, env: Env): boolean {
-	const at = address.lastIndexOf("@");
-	if (at <= 0 || at === address.length - 1) return false;
-	const localPart = address.slice(0, at);
-	const domain = address.slice(at + 1);
-	if (!/^[^\s<>@,;:]+$/.test(localPart)) return false;
-	if (!configuredDomains(env).includes(domain)) return false;
-	return !new Set(["postmaster", "abuse", "mailer-daemon", "bounce", "cf-bounce"]).has(localPart);
-}
-
-async function ensureMailbox(env: Env, mailboxId: string): Promise<void> {
-	const key = `mailboxes/${mailboxId}.json`;
-	if (!(await env.BUCKET.head(key))) {
-		const localPart = mailboxId.slice(0, mailboxId.indexOf("@"));
-		await env.BUCKET.put(key, JSON.stringify({
-			fromName: localPart,
-			status: "unassigned",
-			autoCreated: true,
-			createdAt: new Date().toISOString(),
-			forwarding: { enabled: false, email: "" },
-			signature: { enabled: false, text: "" },
-			autoReply: { enabled: false, subject: "", message: "" },
-		}));
-	}
-	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
-	await stub.getFolders();
-}
 
 async function streamToArrayBuffer(stream: ReadableStream, streamSize: number) {
 	if (streamSize > MAX_EMAIL_SIZE) throw new Error(`Email too large: ${streamSize} bytes exceeds ${MAX_EMAIL_SIZE} byte limit`);

@@ -1,0 +1,29 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "agentic-inbox-import",
+	"compatibility_date": "2025-11-28",
+	"compatibility_flags": ["nodejs_compat"],
+	"main": "workers/import-sink.ts",
+	// The one-off worker was deleted after the 2026-10-06 import.
+	// Deploy it again only to retry failed UIDs, then delete it.
+	"workers_dev": false,
+	"vars": {
+		"DOMAINS": "jdtogo.ai,dev.jdtogo.ai",
+		"TARGET": "production"
+	},
+	"r2_buckets": [
+		{
+			"binding": "BUCKET",
+			"bucket_name": "agentic-inbox"
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "MAILBOX",
+				"class_name": "MailboxDO",
+				"script_name": "agentic-inbox"
+			}
+		]
+	}
+}

@@ -816,6 +816,17 @@ export class MailboxDO extends DurableObject<Env> {
 		return null;
 	}
 
+	async findEmailByMessageId(messageId: string): Promise<{ id: string } | null> {
+		if (!messageId) return null;
+		const row = [
+			...this.ctx.storage.sql.exec(
+				`SELECT id FROM emails WHERE message_id = ?1 LIMIT 1`,
+				messageId,
+			),
+		][0] as { id: string } | undefined;
+		return row ? { id: row.id } : null;
+	}
+
 	// ── Email creation (Drizzle) ───────────────────────────────────
 
 	async createEmail(
