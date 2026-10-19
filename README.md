@@ -62,6 +62,10 @@ npm run dev
 1. Set your domain in `wrangler.jsonc`
 2. Create an R2 bucket named `agentic-inbox`: `wrangler r2 bucket create agentic-inbox`
 
+### Tests
+
+Run `npm test` with Node.js 22.13 or newer for SQLite search and email quote regression tests. Run `npm run typecheck` to check the app and Worker types.
+
 ### Deploy
 
 ```bash
