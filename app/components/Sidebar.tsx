@@ -20,6 +20,7 @@ import { Folders, SYSTEM_FOLDER_IDS } from "shared/folders";
 import { useCreateFolder, useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
 import { useUIStore } from "~/hooks/useUIStore";
+import { mailboxDirectoryUrl } from "~/lib/mailbox-directory-location";
 
 const FOLDER_ICONS: Record<string, React.ReactNode> = {
 	[Folders.INBOX]: <TrayIcon size={18} weight="regular" />,
@@ -127,13 +128,13 @@ export default function Sidebar() {
 				<button
 					type="button"
 					onClick={() => {
-						navigate("/");
+						navigate(mailboxDirectoryUrl());
 						closeSidebar();
 					}}
 					className="flex items-center gap-1.5 text-kumo-subtle text-sm hover:text-kumo-default transition-colors mb-2.5 cursor-pointer bg-transparent border-0 p-0"
 				>
 					<CaretLeftIcon size={14} />
-					<span>Mailboxes</span>
+					<span>邮箱目录</span>
 				</button>
 				<div className="px-1">
 					<div className="text-base font-semibold text-kumo-default truncate">

@@ -5,36 +5,53 @@
 import {
 	Button,
 	Dialog,
-	Empty,
 	Input,
 	Loader,
 	Select,
 	Text,
 	useKumoToastManager,
 } from "@cloudflare/kumo";
-import { EnvelopeIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
+import {
+	ArrowClockwiseIcon,
+	CaretLeftIcon,
+	CaretRightIcon,
+	CopyIcon,
+	EnvelopeIcon,
+	MagnifyingGlassIcon,
+	PlusIcon,
+	TrashIcon,
+} from "@phosphor-icons/react";
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useRef, useState } from "react";
-import { Link as RouterLink } from "react-router";
+import { Link as RouterLink, useSearchParams } from "react-router";
 import api from "~/services/api";
 import {
 	useCreateMailbox,
 	useDeleteMailbox,
+	useMailboxDirectory,
 	useMailboxes,
 } from "~/queries/mailboxes";
 import { queryKeys } from "~/queries/keys";
+import { rememberMailboxDirectory } from "~/lib/mailbox-directory-location";
 
 export function meta() {
-	return [{ title: "Agentic Inbox" }];
+	return [{ title: "邮箱目录 · Agentic Inbox" }];
 }
 
 export default function HomeRoute() {
 	const toastManager = useKumoToastManager();
-	const { data: mailboxes = [], refetch: refetchMailboxes, isFetched: mailboxesFetched } = useMailboxes();
 	const createMailbox = useCreateMailbox();
 	const deleteMailbox = useDeleteMailbox();
+	const [searchParams, setSearchParams] = useSearchParams();
+	const urlQuery = searchParams.get("q")?.trim() ?? "";
+	const domain = searchParams.get("domain") ?? "";
+	const requestedPage = Number(searchParams.get("page") ?? 1);
+	const page = Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+	const requestedLimit = Number(searchParams.get("limit") ?? 25);
+	const limit = [25, 50, 100].includes(requestedLimit) ? requestedLimit : 25;
+	const [searchInput, setSearchInput] = useState(urlQuery);
 
-	const { data: configData } = useQuery({
+	const { data: configData, isError: configError, refetch: refetchConfig } = useQuery({
 		queryKey: queryKeys.config,
 		queryFn: () => api.getConfig(),
 		staleTime: Infinity, // config rarely changes
@@ -42,6 +59,58 @@ export default function HomeRoute() {
 
 	const domains = configData?.domains ?? [];
 	const emailAddresses = configData?.emailAddresses ?? [];
+	const isConfigured = emailAddresses.length > 0;
+	const { data: mailboxes = [], refetch: refetchMailboxes, isSuccess: mailboxesFetched } = useMailboxes(isConfigured);
+	const { data: directory, isPending, isError: directoryError, isFetching, refetch } = useMailboxDirectory(
+		{ page, limit, q: urlQuery, domain }, !!configData,
+	);
+	const accounts = directory?.mailboxes ?? [];
+	const totalCount = directory?.totalCount ?? 0;
+	const totalPages = directory?.totalPages ?? 1;
+	const currentPage = directory?.page ?? page;
+	const isLoading = !configData || isPending;
+	const isError = configError || directoryError;
+
+	useEffect(() => setSearchInput(urlQuery), [urlQuery]);
+	useEffect(() => {
+		const query = searchParams.toString();
+		rememberMailboxDirectory(query ? `/?${query}` : "/");
+	}, [searchParams]);
+	useEffect(() => {
+		if (directory && directory.page !== page) {
+			setSearchParams((previous) => {
+				const next = new URLSearchParams(previous);
+				if (directory.page === 1) next.delete("page");
+				else next.set("page", String(directory.page));
+				return next;
+			}, { replace: true });
+		}
+	}, [directory, page, setSearchParams]);
+
+	const updateDirectory = (values: Record<string, string>) => {
+		setSearchParams((previous) => {
+			const next = new URLSearchParams(previous);
+			next.delete("page");
+			for (const [key, value] of Object.entries(values)) {
+				if (value) next.set(key, value);
+				else next.delete(key);
+			}
+			return next;
+		});
+	};
+
+	const handleSearch = (event: FormEvent) => {
+		event.preventDefault();
+		updateDirectory({ q: searchInput.trim() });
+	};
+	const copyAddress = async (email: string) => {
+		try {
+			await navigator.clipboard.writeText(email);
+			toastManager.add({ title: "邮箱地址已复制" });
+		} catch {
+			toastManager.add({ title: "复制失败，请选中地址手动复制", variant: "error" });
+		}
+	};
 
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
 	const [newPrefix, setNewPrefix] = useState("");
@@ -87,26 +156,28 @@ export default function HomeRoute() {
 			}),
 		).then(() => { if (!cancelled) refetchMailboxes(); });
 		return () => { cancelled = true; };
-	}, [emailAddresses, mailboxes, refetchMailboxes]);
+	}, [emailAddresses, mailboxes, mailboxesFetched, refetchMailboxes]);
 
 	const handleCreate = async (e: FormEvent) => {
 		e.preventDefault();
 		setCreateError(null);
-		if (!newPrefix || !selectedDomain) {
-			setCreateError("Please fill in all fields");
+		if (!newPrefix.trim() || !selectedDomain) {
+			setCreateError("请填写邮箱地址并选择域名");
 			return;
 		}
-		const email = `${newPrefix}@${selectedDomain}`;
-		const name = newName || newPrefix;
+		const email = `${newPrefix.trim().toLowerCase()}@${selectedDomain}`;
+		const name = newName.trim() || newPrefix.trim();
 		setIsCreating(true);
 		try {
 			await createMailbox.mutateAsync({ email, name });
-			toastManager.add({ title: "Mailbox created successfully!" });
+			toastManager.add({ title: "邮箱已创建" });
 			setIsCreateOpen(false);
 			setNewPrefix("");
 			setNewName("");
+			setSearchInput(email);
+			updateDirectory({ q: email, domain: "" });
 		} catch (err: unknown) {
-			const message = (err instanceof Error ? err.message : null) || "Failed to create mailbox";
+			const message = (err instanceof Error ? err.message : null) || "创建邮箱失败";
 			setCreateError(message);
 		} finally {
 			setIsCreating(false);
@@ -118,125 +189,121 @@ export default function HomeRoute() {
 		setIsDeleting(true);
 		try {
 			await deleteMailbox.mutateAsync(mailboxToDelete.id);
-			toastManager.add({ title: "Mailbox deleted" });
+			toastManager.add({ title: "邮箱已删除" });
 			setIsDeleteOpen(false);
 			setMailboxToDelete(null);
 		} catch {
-			toastManager.add({ title: "Failed to delete mailbox", variant: "error" });
+			toastManager.add({ title: "删除邮箱失败", variant: "error" });
 		} finally {
 			setIsDeleting(false);
 		}
 	};
 
-	const isConfigured = emailAddresses.length > 0;
-	const accounts = isConfigured
-		? emailAddresses.map((addr) => ({
-				id: addr,
-				email: addr,
-				name: addr.split("@")[0] || addr,
-			}))
-		: mailboxes;
-
-	const isLoading = !configData;
-
 	return (
 		<div className="min-h-screen bg-kumo-recessed">
-			<div className="mx-auto max-w-2xl px-4 py-8 md:px-6 md:py-16">
-				<div className="mb-8">
-					<div className="flex items-center justify-between">
-						<h1 className="text-2xl font-bold text-kumo-default">Mailboxes</h1>
-						{!isConfigured && (
+			<div className="mx-auto max-w-3xl px-4 py-8 md:px-6 md:py-12">
+				<div className="mb-6">
+					<div className="flex items-center justify-between gap-3">
+						<h1 className="text-2xl font-bold text-kumo-default">邮箱目录</h1>
+						{configData && !isConfigured && (
 							<Button
 								variant="primary"
 								icon={<PlusIcon size={16} />}
 								onClick={() => setIsCreateOpen(true)}
 							>
-								New Mailbox
+								新建邮箱
 							</Button>
 						)}
 					</div>
-					{domains.length > 0 && (
-						<p className="text-sm text-kumo-subtle mt-1">
-							{domains.join(", ")}
-						</p>
-					)}
+					<p className="text-sm text-kumo-subtle mt-2">按地址查找邮箱，打开后查看和处理邮件。</p>
 				</div>
 
-				{isLoading ? (
-					<div className="flex justify-center py-20">
+				<div className="mb-5 space-y-3">
+					<form onSubmit={handleSearch} role="search" aria-label="搜索邮箱目录" className="flex gap-2">
+						<Input
+							className="min-w-0 flex-1"
+							type="search"
+							aria-label="搜索邮箱地址"
+							placeholder="输入完整邮箱地址或其中一部分"
+							value={searchInput}
+							maxLength={320}
+							onChange={(event) => setSearchInput(event.target.value)}
+						/>
+						<Button type="submit" variant="primary" icon={<MagnifyingGlassIcon size={16} />}>搜索</Button>
+					</form>
+					<div className="flex flex-wrap items-center gap-2">
+						<Select aria-label="筛选邮箱域名" value={domain || "all"} renderValue={(value) => value === "all" ? "全部域名" : value} onValueChange={(value) => {
+							if (value) updateDirectory({ domain: value === "all" ? "" : value });
+						}}>
+							<Select.Option value="all">全部域名</Select.Option>
+							{domains.map((item) => <Select.Option key={item} value={item}>{item}</Select.Option>)}
+						</Select>
+						<Select aria-label="每页邮箱数量" value={String(limit)} renderValue={(value) => `每页 ${value} 个`} onValueChange={(value) => {
+							if (value) updateDirectory({ limit: value === "25" ? "" : value });
+						}}>
+							{[25, 50, 100].map((size) => <Select.Option key={size} value={String(size)}>每页 {size} 个</Select.Option>)}
+						</Select>
+						<Button variant="ghost" size="sm" icon={<ArrowClockwiseIcon size={16} />} disabled={isFetching || !configData} onClick={() => void refetch()}>刷新目录</Button>
+						{(urlQuery || domain) && <Button variant="ghost" size="sm" onClick={() => {
+							setSearchInput("");
+							updateDirectory({ q: "", domain: "" });
+						}}>清除筛选</Button>}
+					</div>
+				</div>
+
+				{isError ? (
+					<div role="alert" className="rounded-xl border border-kumo-line bg-kumo-base p-8 text-center">
+						<h2 className="font-semibold text-kumo-default">邮箱目录加载失败</h2>
+						<p className="mt-2 text-sm text-kumo-subtle">暂时无法获取邮箱，请重试。</p>
+						<Button className="mt-4" disabled={isFetching} onClick={() => { void refetchConfig(); void refetch(); }}>重新加载</Button>
+					</div>
+				) : isLoading ? (
+					<div role="status" aria-label="正在加载邮箱目录" className="flex justify-center py-20">
 						<Loader size="lg" />
 					</div>
-				) : accounts.length > 0 ? (
-					<div className="rounded-xl border border-kumo-line bg-kumo-base overflow-hidden">
-						{accounts.map((account, idx) => (
-							<RouterLink
-								key={account.id}
-								to={`/mailbox/${account.id}`}
-								className={`group flex items-center gap-4 px-5 py-4 no-underline transition-colors hover:bg-kumo-tint ${
-									idx > 0 ? "border-t border-kumo-line" : ""
-								}`}
-							>
-								<div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-sm font-bold text-kumo-default">
-									{account.name.charAt(0).toUpperCase()}
-								</div>
-								<div className="min-w-0 flex-1">
-									<div className="text-sm font-medium text-kumo-default truncate">
-										{account.name}
-									</div>
-									<div className="text-sm text-kumo-subtle">
-										{account.email}
-									</div>
-								</div>
-								{!isConfigured && (
-									<Button
-										variant="ghost"
-										size="sm"
-										shape="square"
-										icon={<TrashIcon size={16} />}
-										aria-label={`Delete mailbox ${account.email}`}
-										onClick={(e) => {
-											e.preventDefault();
-											e.stopPropagation();
-											setMailboxToDelete({
-												id: account.id,
-												email: account.email,
-											});
-											setIsDeleteOpen(true);
-										}}
-									/>
-								)}
-							</RouterLink>
-						))}
-					</div>
 				) : (
-					<div className="rounded-xl border border-kumo-line bg-kumo-base py-16 px-6">
-						<div className="flex flex-col items-center text-center">
-							<div className="mb-4">
-								<EnvelopeIcon
-									size={48}
-									weight="thin"
-									className="text-kumo-subtle"
-								/>
+					<>
+						<p role="status" aria-live="polite" className="mb-3 text-sm text-kumo-subtle break-words">
+							{urlQuery || domain ? "找到" : "共"} {totalCount} 个邮箱
+							{accounts.length > 0 && ` · 当前显示 ${(currentPage - 1) * limit + 1}–${(currentPage - 1) * limit + accounts.length}`}
+							{isFetching && " · 正在刷新…"}
+						</p>
+						{accounts.length > 0 ? (
+							<ul className="rounded-xl border border-kumo-line bg-kumo-base divide-y divide-kumo-line overflow-hidden">
+								{accounts.map((account) => (
+									<li key={account.id} className="flex items-center gap-1 pr-2 md:pr-3 hover:bg-kumo-tint transition-colors">
+										<RouterLink to={`/mailbox/${encodeURIComponent(account.id)}`} aria-label={`打开邮箱 ${account.email}`} className="flex min-w-0 flex-1 items-center gap-3 px-3 py-4 md:px-5 no-underline">
+											<div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-kumo-fill text-kumo-default"><EnvelopeIcon size={18} /></div>
+											<div className="min-w-0 flex-1">
+												<div className="text-sm font-medium text-kumo-default [overflow-wrap:anywhere]">
+													{account.email.slice(0, account.email.lastIndexOf("@") + 1)}<wbr />{account.email.slice(account.email.lastIndexOf("@") + 1)}
+												</div>
+												<div className="mt-1 text-xs text-kumo-subtle">{account.email.slice(account.email.lastIndexOf("@") + 1)}</div>
+											</div>
+										</RouterLink>
+										<Button variant="ghost" size="sm" shape="square" icon={<CopyIcon size={16} />} aria-label={`复制邮箱地址 ${account.email}`} onClick={() => void copyAddress(account.email)} />
+										{!isConfigured && <Button variant="ghost" size="sm" shape="square" icon={<TrashIcon size={16} />} aria-label={`删除邮箱 ${account.email}`} onClick={() => {
+											setMailboxToDelete({ id: account.id, email: account.email });
+											setIsDeleteOpen(true);
+										}} />}
+									</li>
+								))}
+							</ul>
+						) : (
+							<div className="rounded-xl border border-kumo-line bg-kumo-base py-14 px-6 text-center">
+								<EnvelopeIcon size={40} weight="thin" className="mx-auto mb-4 text-kumo-subtle" />
+								<h2 className="font-semibold text-kumo-default">{urlQuery || domain ? "没有找到匹配的邮箱" : "还没有邮箱"}</h2>
+								<p className="mt-2 text-sm text-kumo-subtle">{urlQuery || domain ? "试试更短的地址片段，或清除筛选条件。" : "收到新地址的邮件后，邮箱会自动出现在这里，也可以手动新建。"}</p>
 							</div>
-							<h3 className="text-base font-semibold text-kumo-default mb-1.5">
-								No mailboxes yet
-							</h3>
-							<p className="text-sm text-kumo-subtle max-w-sm mb-5">
-								{isConfigured
-									? "Your email routing is configured but no mailboxes have been created yet. They will appear here automatically."
-									: "Create a mailbox to start sending and receiving emails with your domain."}
-							</p>
-							{!isConfigured && (
-								<Button
-									variant="primary"
-									icon={<PlusIcon size={16} />}
-									onClick={() => setIsCreateOpen(true)}
-								>
-									Create Mailbox
-								</Button>
-							)}
-						</div>
-					</div>
+						)}
+						{totalPages > 1 && (
+							<nav aria-label="邮箱目录分页" className="mt-5 flex items-center justify-between gap-2">
+								<Button variant="secondary" size="sm" icon={<CaretLeftIcon size={16} />} disabled={currentPage <= 1 || isFetching} onClick={() => updateDirectory({ page: currentPage === 2 ? "" : String(currentPage - 1) })}>上一页</Button>
+								<span className="text-sm text-kumo-subtle">第 {currentPage} / {totalPages} 页</span>
+								<Button variant="secondary" size="sm" disabled={currentPage >= totalPages || isFetching} onClick={() => updateDirectory({ page: String(currentPage + 1) })}>下一页<CaretRightIcon size={16} /></Button>
+							</nav>
+						)}
+					</>
 				)}
 			</div>
 
@@ -244,7 +311,7 @@ export default function HomeRoute() {
 			<Dialog.Root open={isCreateOpen} onOpenChange={setIsCreateOpen}>
 				<Dialog size="sm" className="p-6">
 					<Dialog.Title className="text-base font-semibold mb-5">
-						Create New Mailbox
+						新建邮箱
 					</Dialog.Title>
 					<form onSubmit={handleCreate} className="space-y-4">
 						{createError && (
@@ -254,12 +321,12 @@ export default function HomeRoute() {
 						)}
 						<div>
 							<span className="text-sm font-medium text-kumo-default mb-1.5 block">
-								Email Address
+								邮箱地址
 							</span>
 							<div className="flex items-center gap-2">
 								<div className="flex-1">
 									<Input
-										aria-label="Address prefix"
+									aria-label="邮箱地址前缀"
 										placeholder="info"
 										size="sm"
 										value={newPrefix}
@@ -270,13 +337,13 @@ export default function HomeRoute() {
 								<span className="text-sm text-kumo-subtle">@</span>
 								{domains.length > 1 ? (
 									<div className="flex-1">
-							<Select
-								aria-label="Domain"
-								value={selectedDomain}
-								onValueChange={(value) => {
-									if (value) setSelectedDomain(value);
-								}}
-							>
+										<Select
+											aria-label="邮箱域名"
+											value={selectedDomain}
+											onValueChange={(value) => {
+												if (value) setSelectedDomain(value);
+											}}
+										>
 											{domains.map((d) => (
 												<Select.Option key={d} value={d}>
 													{d}
@@ -286,14 +353,14 @@ export default function HomeRoute() {
 									</div>
 								) : (
 									<span className="text-sm text-kumo-subtle">
-										{selectedDomain || "no domain"}
+										{selectedDomain || "未配置域名"}
 									</span>
 								)}
 							</div>
 						</div>
 						<Input
-							label="Display Name (optional)"
-							placeholder="Info"
+							label="显示名称（选填）"
+							placeholder="例如：申请咨询"
 							size="sm"
 							value={newName}
 							onChange={(e) => setNewName(e.target.value)}
@@ -302,7 +369,7 @@ export default function HomeRoute() {
 							<Dialog.Close
 								render={(props) => (
 									<Button {...props} variant="secondary" size="sm">
-										Cancel
+										取消
 									</Button>
 								)}
 							/>
@@ -313,7 +380,7 @@ export default function HomeRoute() {
 								loading={isCreating}
 								disabled={!selectedDomain}
 							>
-								Create
+								创建
 							</Button>
 						</div>
 					</form>
@@ -330,20 +397,20 @@ export default function HomeRoute() {
 			>
 				<Dialog size="sm" className="p-6">
 					<Dialog.Title className="text-base font-semibold mb-2">
-						Delete Mailbox
+						删除邮箱
 					</Dialog.Title>
 					<Dialog.Description className="text-kumo-subtle text-sm mb-5">
-						Are you sure you want to delete{" "}
+						确定删除{" "}
 						<strong className="text-kumo-default">
 							{mailboxToDelete?.email}
 						</strong>
-						? This action cannot be undone.
+						？此操作无法撤销。
 					</Dialog.Description>
 					<div className="flex justify-end gap-2">
 						<Dialog.Close
 							render={(props) => (
 								<Button {...props} variant="secondary" size="sm">
-									Cancel
+									取消
 								</Button>
 							)}
 						/>
@@ -353,7 +420,7 @@ export default function HomeRoute() {
 							loading={isDeleting}
 							onClick={handleDelete}
 						>
-							Delete
+							删除
 						</Button>
 					</div>
 				</Dialog>

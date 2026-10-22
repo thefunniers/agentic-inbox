@@ -37,6 +37,7 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 
 ## Features
 
+- **Mailbox directory** — Server-side pagination (25/50/100 per page), address substring search across the full directory, exact domain filtering, address copying, and preserved filters when returning from a mailbox
 - **Full email client** — Send and receive emails via Cloudflare Email Routing with a rich text composer, reply/forward threading, folder organization, search, and attachments
 - **Per-mailbox isolation** — Each mailbox runs in its own Durable Object with SQLite storage and R2 for attachments
 - **Built-in AI agent** — Side panel with 9 email tools for reading, searching, drafting, and sending
@@ -64,7 +65,7 @@ npm run dev
 
 ### Tests
 
-Run `npm test` with Node.js 22.13 or newer for SQLite search and email quote regression tests. Run `npm run typecheck` to check the app and Worker types.
+Run `npm test` with Node.js 22.13 or newer for mailbox directory pagination/search, SQLite search, and email quote regression tests. Run `npm run typecheck` to check the app and Worker types.
 
 ### Deploy
 

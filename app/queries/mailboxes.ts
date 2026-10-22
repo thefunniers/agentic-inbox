@@ -5,12 +5,22 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "~/services/api";
 import type { Mailbox } from "~/types";
+import type { MailboxDirectoryOptions } from "../../shared/mailbox-directory";
 import { queryKeys } from "./keys";
 
-export function useMailboxes() {
+export function useMailboxes(enabled = true) {
 	return useQuery<Mailbox[]>({
 		queryKey: queryKeys.mailboxes.all,
 		queryFn: () => api.listMailboxes() as Promise<Mailbox[]>,
+		enabled,
+	});
+}
+
+export function useMailboxDirectory(options: MailboxDirectoryOptions, enabled = true) {
+	return useQuery({
+		queryKey: queryKeys.mailboxes.directory(options),
+		queryFn: ({ signal }) => api.listMailboxDirectory(options, signal),
+		enabled,
 	});
 }
 

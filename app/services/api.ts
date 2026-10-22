@@ -3,6 +3,7 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import type { Email, Folder, Mailbox } from "~/types";
+import type { MailboxDirectoryOptions, MailboxDirectoryPage } from "../../shared/mailbox-directory";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -101,6 +102,11 @@ const api = {
 
 	// Mailboxes
 	listMailboxes: () => get<Mailbox[]>("/api/v1/mailboxes"),
+	listMailboxDirectory: (options: MailboxDirectoryOptions, signal?: AbortSignal) =>
+		get<MailboxDirectoryPage>("/api/v1/mailboxes", {
+			params: { page: String(options.page), limit: String(options.limit), q: options.q, domain: options.domain },
+			signal,
+		}),
 	createMailbox: (email: string, name: string, settings?: unknown) =>
 		post<Mailbox>("/api/v1/mailboxes", { email, name, settings }),
 	getMailbox: (mailboxId: string) =>

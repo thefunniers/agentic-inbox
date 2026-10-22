@@ -6,6 +6,8 @@
 export const queryKeys = {
 	mailboxes: {
 		all: ["mailboxes"] as const,
+		directory: (options: { page: number; limit: number; q: string; domain: string }) =>
+			["mailboxes", "directory", options] as const,
 		detail: (id: string) => ["mailboxes", id] as const,
 	},
 	emails: {

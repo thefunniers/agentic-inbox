@@ -21,6 +21,7 @@ import { Folders } from "../shared/folders";
 import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
 import { ensureMailbox, isManagedMailboxAddress } from "./lib/provision-mailbox";
+import { listMailboxDirectory, MailboxDirectoryQuery } from "./lib/mailbox-directory";
 
 type AppContext = Context<MailboxContext>;
 
@@ -96,6 +97,18 @@ app.get("/api/v1/config", (c) => {
 // -- Mailboxes ------------------------------------------------------
 
 app.get("/api/v1/mailboxes", async (c) => {
+	const params = c.req.query();
+	if (["page", "limit", "q", "domain"].some((key) => key in params)) {
+		const query = MailboxDirectoryQuery.safeParse(params);
+		if (!query.success) return c.json({ error: "Invalid mailbox directory parameters" }, 400);
+		try {
+			return c.json(await listMailboxDirectory(c.env.BUCKET, query.data, c.env.EMAIL_ADDRESSES ?? []));
+		} catch (error) {
+			console.error("Failed to load mailbox directory:", (error as Error).message);
+			return c.json({ error: "Unable to load mailbox directory. Please try again." }, 503);
+		}
+	}
+	// Preserve the array response used by existing clients and provisioning.
 	const allMailboxes = await listMailboxes(c.env.BUCKET);
 	return c.json(allMailboxes.map((m) => ({ ...m, name: m.id })));
 });
