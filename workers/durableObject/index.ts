@@ -11,6 +11,8 @@ import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
 import { buildSearchConditions, type SearchFilterOptions } from "../lib/search";
+import { buildFileQuery } from "../lib/files";
+import type { FileListOptions, FileListPage, MailboxFile } from "../../shared/files";
 
 /**
  * SQL expression to normalize email subjects by stripping common
@@ -558,6 +560,20 @@ export class MailboxDO extends DurableObject<Env> {
 		);
 	}
 
+	async listFiles(mailboxId: string, options: FileListOptions): Promise<FileListPage> {
+		const { source, where, params } = buildFileQuery(mailboxId, options);
+		const [{ total }] = this.ctx.storage.sql.exec<{ total: number }>(
+			`${source} SELECT COUNT(*) AS total FROM files ${where}`, ...params,
+		).toArray();
+		const totalPages = Math.max(1, Math.ceil(total / options.limit));
+		const page = Math.min(options.page, totalPages);
+		const files = this.ctx.storage.sql.exec<MailboxFile & Record<string, string | number | null>>(
+			`${source} SELECT * FROM files ${where} ORDER BY date DESC, email_id DESC, id DESC LIMIT ? OFFSET ?`,
+			...params, options.limit, (page - 1) * options.limit,
+		).toArray();
+		return { files, totalCount: total, totalPages, page, limit: options.limit };
+	}
+
 	// ── Folders (Drizzle) ──────────────────────────────────────────
 
 	async getFolders() {
@@ -820,6 +836,7 @@ export class MailboxDO extends DurableObject<Env> {
 			.values({
 				id: email.id,
 				folder_id: folderId,
+				direction: folderId === Folders.DRAFT ? null : isSent ? "sent" : "received",
 				subject: email.subject,
 				sender: email.sender,
 				recipient: email.recipient,

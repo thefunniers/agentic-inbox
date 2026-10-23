@@ -56,6 +56,7 @@ export function useDeleteFolder() {
 			api.deleteFolder(mailboxId, id),
 		onSuccess: (_data, { mailboxId }) => {
 			qc.invalidateQueries({ queryKey: queryKeys.folders.list(mailboxId) });
+			qc.invalidateQueries({ queryKey: ["files"] });
 		},
 	});
 }

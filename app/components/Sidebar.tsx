@@ -8,6 +8,7 @@ import {
 	CaretLeftIcon,
 	FileIcon,
 	FolderIcon,
+	FilesIcon,
 	PaperPlaneTiltIcon,
 	PencilSimpleIcon,
 	PlusIcon,
@@ -170,6 +171,13 @@ export default function Sidebar() {
 						onClick={handleNavClick}
 					/>
 				))}
+				<div className="my-2 border-t border-kumo-line" />
+				<FolderLink
+					to={`/mailbox/${mailboxId}/files`}
+					icon={<FilesIcon size={18} />}
+					label="文件"
+					onClick={handleNavClick}
+				/>
 
 				{/* Custom folders */}
 				{customFolders.length > 0 && (

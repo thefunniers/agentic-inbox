@@ -18,7 +18,7 @@ import {
 } from "@phosphor-icons/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
 import { Folders } from "shared/folders";
 import { formatListDate } from "shared/dates";
 import MailboxSplitView from "~/components/MailboxSplitView";
@@ -141,6 +141,8 @@ function FolderEmptyState({
 }
 
 export default function EmailListRoute() {
+	const [searchParams] = useSearchParams();
+	const requestedEmailId = searchParams.get("email");
 	const { mailboxId, folder } = useParams<{
 		mailboxId: string;
 		folder: string;
@@ -198,6 +200,9 @@ export default function EmailListRoute() {
 			setPage(1);
 		}
 	}, [mailboxId, folder, closePanel]);
+	useEffect(() => {
+		if (requestedEmailId) selectEmail(requestedEmailId);
+	}, [mailboxId, folder, requestedEmailId, selectEmail]);
 
 	const toggleStar = (e: React.MouseEvent, email: Email) => {
 		e.preventDefault();

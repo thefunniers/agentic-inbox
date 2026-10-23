@@ -13,6 +13,8 @@
 		}
 	},
 	"scripts": {
+		"prebuild": "node scripts/prepare-pdf-assets.mjs",
+		"predev": "node scripts/prepare-pdf-assets.mjs",
 		"build": "react-router build",
 		"test": "node --experimental-strip-types --test tests/*.test.mjs",
 		"cf-typegen": "wrangler types",
@@ -44,6 +46,7 @@
 		"htmlparser2": "10.0.0",
 		"isbot": "^5.1.27",
 		"jose": "^6.2.1",
+		"pdfjs-dist": "6.4.299",
 		"postal-mime": "^2.6.1",
 		"react": "^19.1.0",
 		"react-dom": "^19.1.0",

@@ -40,8 +40,9 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 - **Mailbox directory** — Server-side pagination (25/50/100 per page), address substring search across the full directory, exact domain filtering, address copying, and preserved filters when returning from a mailbox
 - **Full email client** — Send and receive emails via Cloudflare Email Routing with a rich text composer, reply/forward threading, folder organization, search, and attachments
 - **Attachments throughout** — Select or drop multiple files into new messages and replies, keep them in saved drafts, and include or remove original files when forwarding. Received files support downloads with Unicode filenames, image previews, and inline CID images. Sends wait for the provider response; failures retain the composer contents.
+- **File browser** — Open `/files` from the mailbox directory for all attachments, with an exact mailbox filter, or use **文件** in a mailbox sidebar for its own files. Both views support received/sent filters, filename/subject/address search, pagination, image/PDF/text previews, original-file downloads, and links back to the source email. Drafts and trash are excluded; inline images can be included explicitly.
 - **Per-mailbox isolation** — Each mailbox runs in its own Durable Object with SQLite storage and R2 for attachments
-- **Built-in AI agent** — Side panel with 9 email tools for reading, searching, drafting, and sending
+- **Built-in AI agent** — Backend tools for reading, searching, drafting, and sending. Agent/MCP panels and the toolbar toggle are hidden from the workspace by default.
 - **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending
 - **Configurable and persistent** — Custom system prompts per mailbox, persistent chat history, streaming markdown responses, and tool call visibility
 

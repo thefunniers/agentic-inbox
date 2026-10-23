@@ -17,6 +17,7 @@ import {
 	CaretRightIcon,
 	CopyIcon,
 	EnvelopeIcon,
+	FilesIcon,
 	MagnifyingGlassIcon,
 	PlusIcon,
 	TrashIcon,
@@ -205,6 +206,7 @@ export default function HomeRoute() {
 				<div className="mb-6">
 					<div className="flex items-center justify-between gap-3">
 						<h1 className="text-2xl font-bold text-kumo-default">邮箱目录</h1>
+						<RouterLink to="/files" className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md border border-kumo-line px-3 py-2 text-sm text-kumo-default hover:bg-kumo-tint"><FilesIcon size={16} />全局文件</RouterLink>
 						{configData && !isConfigured && (
 							<Button
 								variant="primary"

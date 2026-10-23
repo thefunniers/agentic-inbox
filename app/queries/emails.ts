@@ -99,6 +99,7 @@ function useInvalidateEmailData() {
 	const qc = useQueryClient();
 	return (mailboxId: string) => {
 		qc.invalidateQueries({ queryKey: ["emails", mailboxId] });
+		qc.invalidateQueries({ queryKey: ["files"] });
 		qc.invalidateQueries({
 			queryKey: queryKeys.folders.list(mailboxId),
 		});

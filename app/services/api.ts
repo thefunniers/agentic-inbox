@@ -5,6 +5,7 @@
 import type { Attachment, Email, Folder, Mailbox } from "~/types";
 import type { AttachmentInput } from "../../shared/attachments";
 import type { MailboxDirectoryOptions, MailboxDirectoryPage } from "../../shared/mailbox-directory";
+import type { FileListOptions, FileListPage, GlobalFileListPage } from "../../shared/files";
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -137,8 +138,18 @@ const api = {
 		get<Email[]>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}`, { signal: opts?.signal }),
 	markThreadRead: (mailboxId: string, threadId: string) =>
 		post<void>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}/read`),
-	getAttachment: (mailboxId: string, emailId: string, attachmentId: string) =>
-		get<Blob>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/attachments/${attachmentId}`, { responseType: "blob" }),
+	listFiles: (mailboxId: string, options: FileListOptions, signal?: AbortSignal) =>
+		get<FileListPage>(`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}/files`, {
+			params: { page: String(options.page), limit: String(options.limit), q: options.q, direction: options.direction, includeInline: String(options.includeInline) },
+			signal,
+		}),
+	listGlobalFiles: (options: FileListOptions, mailbox?: string, signal?: AbortSignal) =>
+		get<GlobalFileListPage>("/api/v1/files", {
+			params: { page: String(options.page), limit: String(options.limit), q: options.q, direction: options.direction, includeInline: String(options.includeInline), ...(mailbox ? { mailbox } : {}) },
+			signal,
+		}),
+	getAttachment: (mailboxId: string, emailId: string, attachmentId: string, signal?: AbortSignal) =>
+		get<Blob>(`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}/emails/${encodeURIComponent(emailId)}/attachments/${encodeURIComponent(attachmentId)}`, { responseType: "blob", signal }),
 	saveDraft: (
 		mailboxId: string,
 		draft: {

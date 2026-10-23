@@ -23,6 +23,8 @@ import type { Env } from "./types";
 import { requireMailbox, type MailboxContext } from "./lib/mailbox";
 import { ensureMailbox, isManagedMailboxAddress } from "./lib/provision-mailbox";
 import { listMailboxDirectory, MailboxDirectoryQuery } from "./lib/mailbox-directory";
+import { FileListQuery } from "./lib/files";
+import { listGlobalFiles } from "./lib/global-files";
 
 type AppContext = Context<MailboxContext>;
 
@@ -352,6 +354,26 @@ app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {
 });
 
 // -- Attachments ----------------------------------------------------
+
+app.get("/api/v1/files", async (c) => {
+	const { mailbox, ...options } = FileListQuery.extend({ mailbox: z.string().trim().toLowerCase().email().max(320).optional() }).parse(c.req.query());
+	try {
+		if (mailbox) {
+			if (!(await c.env.BUCKET.head(`mailboxes/${mailbox}.json`))) return c.json({ error: "Mailbox not found" }, 404);
+			const result = await c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mailbox)).listFiles(mailbox, options);
+			return c.json({ ...result, files: result.files.map((file) => ({ ...file, mailboxId: mailbox })), mailboxCount: 1 });
+		}
+		return c.json(await listGlobalFiles(c.env, options));
+	} catch (error) {
+		console.error("Unable to list global files:", (error as Error).message);
+		return c.json({ error: "Unable to load files from all mailboxes. Please try again." }, 503);
+	}
+});
+
+app.get("/api/v1/mailboxes/:mailboxId/files", async (c: AppContext) => {
+	const options = FileListQuery.parse(c.req.query());
+	return c.json(await c.var.mailboxStub.listFiles(c.req.param("mailboxId")!, options));
+});
 
 app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/attachments/:attachmentId", async (c: AppContext) => {
 	const emailId = c.req.param("emailId")!;

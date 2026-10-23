@@ -41,6 +41,7 @@ export function useCreateMailbox() {
 			api.createMailbox(email, name),
 		onSuccess: () => {
 			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
+			qc.invalidateQueries({ queryKey: ["files"] });
 		},
 	});
 }
@@ -66,6 +67,7 @@ export function useDeleteMailbox() {
 		mutationFn: (mailboxId: string) => api.deleteMailbox(mailboxId),
 		onSuccess: () => {
 			qc.invalidateQueries({ queryKey: queryKeys.mailboxes.all });
+			qc.invalidateQueries({ queryKey: ["files"] });
 		},
 	});
 }

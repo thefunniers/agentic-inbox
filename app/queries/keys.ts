@@ -2,6 +2,8 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
+import type { FileListOptions } from "../../shared/files";
+
 /** Centralised query key factories for cache invalidation. */
 export const queryKeys = {
 	mailboxes: {
@@ -24,6 +26,10 @@ export const queryKeys = {
 	search: {
 		results: (mailboxId: string, query: string, page: number) =>
 			["search", mailboxId, query, page] as const,
+	},
+	files: {
+		list: (mailboxId: string, options: FileListOptions) =>
+			["files", mailboxId, options] as const,
 	},
 	config: ["config"] as const,
 };

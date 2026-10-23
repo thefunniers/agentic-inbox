@@ -172,4 +172,14 @@ export const mailboxMigrations: Migration[] = [
 		name: "9_add_message_id_index",
 		sql: `CREATE INDEX IF NOT EXISTS idx_emails_message_id ON emails(message_id);`,
 	},
+	{
+		name: "10_preserve_email_direction",
+		sql: txn(`
+            ALTER TABLE emails ADD COLUMN direction TEXT;
+            UPDATE emails SET direction = CASE
+                WHEN folder_id = 'sent' THEN 'sent'
+                WHEN folder_id IN ('inbox', 'spam') THEN 'received'
+                ELSE NULL END;
+        `),
+	},
 ];
