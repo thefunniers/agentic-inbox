@@ -2,7 +2,8 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import type { Email, Folder, Mailbox } from "~/types";
+import type { Attachment, Email, Folder, Mailbox } from "~/types";
+import type { AttachmentInput } from "../../shared/attachments";
 import type { MailboxDirectoryOptions, MailboxDirectoryPage } from "../../shared/mailbox-directory";
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -22,9 +23,11 @@ export class ApiError extends Error {
 async function request<T>(
 	url: string,
 	options: RequestInit = {},
+	responseType = "auto",
+	timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<T> {
 	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+	const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
 	// Combine caller signal (e.g. TanStack Query abort) with our timeout signal
 	const signal = options.signal
@@ -47,6 +50,7 @@ async function request<T>(
 		}
 
 		if (res.status === 204) return undefined as T;
+		if (responseType === "blob") return res.blob() as unknown as T;
 
 		const contentType = res.headers.get("content-type") ?? "";
 		if (contentType.includes("application/json")) {
@@ -64,15 +68,15 @@ function get<T>(url: string, opts?: { params?: Record<string, string>; responseT
 		method: "GET",
 		signal: opts?.signal,
 		...(opts?.responseType === "blob" ? { headers: { Accept: "*/*" } } : {}),
-	});
+	}, opts?.responseType);
 }
 
-function post<T>(url: string, body?: unknown, opts?: { signal?: AbortSignal }) {
+function post<T>(url: string, body?: unknown, opts?: { signal?: AbortSignal; timeoutMs?: number }) {
 	return request<T>(url, {
 		method: "POST",
 		signal: opts?.signal,
 		body: body != null ? JSON.stringify(body) : undefined,
-	});
+	}, "auto", opts?.timeoutMs);
 }
 
 function put<T>(url: string, body?: unknown) {
@@ -120,7 +124,7 @@ const api = {
 	listEmails: (mailboxId: string, params: Record<string, string>, opts?: { signal?: AbortSignal }) =>
 		get<EmailListResponse | Email[]>(`/api/v1/mailboxes/${mailboxId}/emails`, { params, signal: opts?.signal }),
 	sendEmail: (mailboxId: string, email: unknown) =>
-		post<void>(`/api/v1/mailboxes/${mailboxId}/emails`, email),
+		post<void>(`/api/v1/mailboxes/${mailboxId}/emails`, email, { timeoutMs: 120_000 }),
 	getEmail: (mailboxId: string, id: string, opts?: { signal?: AbortSignal }) =>
 		get<Email>(`/api/v1/mailboxes/${mailboxId}/emails/${id}`, { signal: opts?.signal }),
 	updateEmail: (mailboxId: string, id: string, data: unknown) =>
@@ -146,12 +150,13 @@ const api = {
 			in_reply_to?: string;
 			thread_id?: string;
 			draft_id?: string;
+			attachments?: AttachmentInput[];
 		},
-	) => post<{ draft_id: string }>(`/api/v1/mailboxes/${mailboxId}/drafts`, draft),
+	) => post<{ id: string; attachments: Attachment[] }>(`/api/v1/mailboxes/${mailboxId}/drafts`, draft, { timeoutMs: 120_000 }),
 	replyToEmail: (mailboxId: string, emailId: string, email: unknown) =>
-		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/reply`, email),
+		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/reply`, email, { timeoutMs: 120_000 }),
 	forwardEmail: (mailboxId: string, emailId: string, email: unknown) =>
-		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/forward`, email),
+		post<void>(`/api/v1/mailboxes/${mailboxId}/emails/${emailId}/forward`, email, { timeoutMs: 120_000 }),
 
 	// Folders
 	listFolders: (mailboxId: string) =>

@@ -31,11 +31,13 @@ import { useCallback, useEffect } from "react";
 interface RichTextEditorProps {
 	value: string;
 	onChange: (value: string) => void;
+	disabled?: boolean;
 }
 
 export default function RichTextEditor({
 	value,
 	onChange,
+	disabled = false,
 }: RichTextEditorProps) {
 	const editor = useEditor({
 		extensions: [
@@ -59,6 +61,7 @@ export default function RichTextEditor({
 			onChange(editor.getHTML());
 		},
 	});
+	useEffect(() => { editor?.setEditable(!disabled, false); }, [editor, disabled]);
 
 	useEffect(() => {
 		if (editor && !editor.isDestroyed && value !== editor.getHTML()) {

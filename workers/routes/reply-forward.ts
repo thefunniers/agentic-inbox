@@ -3,8 +3,8 @@
 //     https://opensource.org/licenses/Apache-2.0
 
 import type { Context } from "hono";
-import { sendEmail } from "../email-sender";
-import { storeAttachments } from "../lib/attachments";
+import { deleteAttachments, resolveAttachments, storeAttachments } from "../lib/attachments";
+import { deliverStoredEmail } from "../lib/delivery";
 import type { EmailFull } from "../lib/schemas";
 import {
 	validateSender,
@@ -25,7 +25,7 @@ export async function handleReplyEmail(c: AppContext) {
 	const mailboxId = c.req.param("mailboxId") ?? "";
 	const id = c.req.param("id") ?? "";
 	const body = SendEmailRequestSchema.parse(await c.req.json());
-	const { to, cc, bcc, from, subject, html, text, attachments } = body;
+	const { to, cc, bcc, from, subject, html, text } = body;
 
 	const stub = c.var.mailboxStub;
 	const rawOriginal = (await stub.getEmail(id)) as EmailFull | null;
@@ -53,6 +53,7 @@ export async function handleReplyEmail(c: AppContext) {
 		return c.json({ error: rateLimitError }, 429);
 	}
 
+	const attachments = await resolveAttachments(c.env.BUCKET, stub, body.attachments, body);
 	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
 
 	await stub.createEmail(
@@ -83,12 +84,12 @@ export async function handleReplyEmail(c: AppContext) {
 			]),
 		},
 		attachmentData,
-	);
+	).catch(async (error) => {
+		await deleteAttachments(c.env.BUCKET, attachmentData);
+		throw error;
+	});
 
-	await stub.markThreadRead(thread_id);
-
-	c.executionCtx.waitUntil(
-		sendEmail(c.env.EMAIL, {
+	await deliverStoredEmail(c.env, stub, messageId, {
 			to,
 			cc,
 			bcc,
@@ -96,18 +97,10 @@ export async function handleReplyEmail(c: AppContext) {
 			subject,
 			html,
 			text,
-			attachments: attachments?.map((att) => ({
-				content: att.content,
-				filename: att.filename,
-				type: att.type,
-				disposition: att.disposition,
-				contentId: att.contentId,
-			})),
+			attachments,
 			headers: buildThreadingHeaders(originalMsgId, references),
-		}).catch((e) => {
-			console.error("Deferred reply delivery failed:", (e as Error).message);
-		}),
-	);
+		}, attachmentData);
+	c.executionCtx.waitUntil(stub.markThreadRead(thread_id).catch((error) => console.error("Mark thread read failed:", error)));
 
 	return c.json({ id: messageId, status: "sent" }, 202);
 }
@@ -116,7 +109,7 @@ export async function handleForwardEmail(c: AppContext) {
 	const mailboxId = c.req.param("mailboxId") ?? "";
 	const id = c.req.param("id") ?? "";
 	const body = SendEmailRequestSchema.parse(await c.req.json());
-	const { to, cc, bcc, from, subject, html, text, attachments } = body;
+	const { to, cc, bcc, from, subject, html, text } = body;
 
 	const stub = c.var.mailboxStub;
 	const rawOriginal = (await stub.getEmail(id)) as EmailFull | null;
@@ -143,6 +136,8 @@ export async function handleForwardEmail(c: AppContext) {
 		return c.json({ error: rateLimitError }, 429);
 	}
 
+	const inputs = body.attachments ?? rawOriginal.attachments?.map((file) => ({ emailId: id, attachmentId: file.id }));
+	const attachments = await resolveAttachments(c.env.BUCKET, stub, inputs, body);
 	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
 
 	await stub.createEmail(
@@ -171,10 +166,12 @@ export async function handleForwardEmail(c: AppContext) {
 			]),
 		},
 		attachmentData,
-	);
+	).catch(async (error) => {
+		await deleteAttachments(c.env.BUCKET, attachmentData);
+		throw error;
+	});
 
-	c.executionCtx.waitUntil(
-		sendEmail(c.env.EMAIL, {
+	await deliverStoredEmail(c.env, stub, messageId, {
 			to,
 			cc,
 			bcc,
@@ -182,17 +179,8 @@ export async function handleForwardEmail(c: AppContext) {
 			subject,
 			html,
 			text,
-			attachments: attachments?.map((att) => ({
-				content: att.content,
-				filename: att.filename,
-				type: att.type,
-				disposition: att.disposition,
-				contentId: att.contentId,
-			})),
-		}).catch((e) => {
-			console.error("Deferred forward delivery failed:", (e as Error).message);
-		}),
-	);
+			attachments,
+		}, attachmentData);
 
 	return c.json({ id: messageId, status: "sent" }, 202);
 }

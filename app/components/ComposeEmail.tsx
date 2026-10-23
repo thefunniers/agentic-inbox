@@ -7,6 +7,7 @@ import { FloppyDiskIcon, PaperPlaneTiltIcon } from "@phosphor-icons/react";
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
 import RichTextEditor from "./RichTextEditor";
+import ComposeAttachments from "./ComposeAttachments";
 import { useUIStore } from "~/hooks/useUIStore";
 
 export default function ComposeEmail() {
@@ -33,6 +34,7 @@ export default function ComposeEmail() {
 		error,
 		isSavingDraft,
 		isSending,
+		isBusy, isReadingAttachments, attachments, addAttachments, removeAttachment,
 		formTitle,
 		handleSaveDraft,
 		handleSend,
@@ -41,13 +43,14 @@ export default function ComposeEmail() {
 	return (
 		<Dialog.Root
 			open={isComposeModalOpen}
-			onOpenChange={(open) => !open && !isSending && closeComposeModal()}
+			onOpenChange={(open) => !open && !isBusy && closeComposeModal()}
 		>
 			<Dialog size="lg" className="p-6 max-h-[85vh] overflow-y-auto">
 				<Dialog.Title className="text-lg font-semibold mb-5">
 					{formTitle}
 				</Dialog.Title>
 				<form onSubmit={(e) => handleSend(e, closeComposeModal)} className="space-y-4">
+					<fieldset disabled={isBusy} className="space-y-4 min-w-0">
 					{error && <Banner variant="error" text={error} />}
 					<div className="flex items-center gap-2">
 						<div className="flex-1">
@@ -104,15 +107,17 @@ export default function ComposeEmail() {
 						<Text size="sm" DANGEROUS_className="font-medium mb-1.5 block">
 							Message
 						</Text>
-						<RichTextEditor value={body} onChange={setBody} />
+						<RichTextEditor value={body} onChange={setBody} disabled={isBusy} />
 					</div>
+					<ComposeAttachments attachments={attachments} onAdd={addAttachments} onRemove={removeAttachment} busy={isBusy} reading={isReadingAttachments} />
+					</fieldset>
 					<div className="flex justify-between items-center pt-2">
 						<Button
 							type="button"
 							variant="ghost"
 							size="sm"
 							onClick={closeComposeModal}
-							disabled={isSending}
+							disabled={isBusy}
 						>
 							Discard
 						</Button>
@@ -122,7 +127,7 @@ export default function ComposeEmail() {
 								variant="secondary"
 								size="sm"
 								loading={isSavingDraft}
-								disabled={isSending}
+								disabled={isBusy}
 								icon={<FloppyDiskIcon size={14} />}
 								onClick={handleSaveDraft}
 							>
@@ -133,7 +138,7 @@ export default function ComposeEmail() {
 								variant="primary"
 								size="sm"
 								loading={isSending}
-								disabled={isSavingDraft || isSending}
+								disabled={isBusy}
 								icon={<PaperPlaneTiltIcon size={14} />}
 							>
 								{isSending ? "Sending..." : "Send"}

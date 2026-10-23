@@ -39,10 +39,13 @@ https://github.com/cloudflare/agentic-inbox/issues/4#issuecomment-4269118513
 
 - **Mailbox directory** — Server-side pagination (25/50/100 per page), address substring search across the full directory, exact domain filtering, address copying, and preserved filters when returning from a mailbox
 - **Full email client** — Send and receive emails via Cloudflare Email Routing with a rich text composer, reply/forward threading, folder organization, search, and attachments
+- **Attachments throughout** — Select or drop multiple files into new messages and replies, keep them in saved drafts, and include or remove original files when forwarding. Received files support downloads with Unicode filenames, image previews, and inline CID images. Sends wait for the provider response; failures retain the composer contents.
 - **Per-mailbox isolation** — Each mailbox runs in its own Durable Object with SQLite storage and R2 for attachments
 - **Built-in AI agent** — Side panel with 9 email tools for reading, searching, drafting, and sending
 - **Auto-draft on new email** — Agent automatically reads inbound emails and generates draft replies, always requiring explicit confirmation before sending
 - **Configurable and persistent** — Custom system prompts per mailbox, persistent chat history, streaming markdown responses, and tool call visibility
+
+The composer supports up to 32 attachments and checks the 5 MiB outgoing message limit, including encoding overhead and message text. Inbound messages support up to 25 MiB. These follow the general [Cloudflare Email Service limits](https://developers.cloudflare.com/email-service/platform/limits/). The API accepts base64 attachments or references (`{ emailId, attachmentId }`) to files in the same mailbox; drafts retain attachments when the field is omitted and remove them when passed an empty array.
 
 ## Stack
 

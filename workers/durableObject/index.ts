@@ -779,6 +779,22 @@ export class MailboxDO extends DurableObject<Env> {
 		email: EmailData,
 		attachments: AttachmentData[],
 	) {
+		this.ctx.storage.transactionSync(() => this.insertEmail(folder, email, attachments));
+	}
+
+	async saveDraft(email: EmailData, attachments: AttachmentData[]) {
+		return this.ctx.storage.transactionSync(() => {
+			const previous = this.db.select().from(schema.emails).where(eq(schema.emails.id, email.id)).get();
+			if (previous && previous.folder_id !== Folders.DRAFT) throw new Error("Only drafts can be replaced");
+			const oldAttachments = this.db.select().from(schema.attachments).where(eq(schema.attachments.email_id, email.id)).all();
+			this.db.delete(schema.attachments).where(eq(schema.attachments.email_id, email.id)).run();
+			this.db.delete(schema.emails).where(eq(schema.emails.id, email.id)).run();
+			this.insertEmail(Folders.DRAFT, email, attachments);
+			return oldAttachments;
+		});
+	}
+
+	private insertEmail(folder: string, email: EmailData, attachments: AttachmentData[]) {
 		// Resolve folder name or ID to the actual folder ID.
 		const folderRow = this.db
 			.select({ id: schema.folders.id })

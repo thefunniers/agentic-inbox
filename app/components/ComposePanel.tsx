@@ -7,6 +7,7 @@ import { FloppyDiskIcon, PaperPlaneTiltIcon, XIcon } from "@phosphor-icons/react
 import { useParams } from "react-router";
 import { useComposeForm } from "~/hooks/useComposeForm";
 import RichTextEditor from "./RichTextEditor";
+import ComposeAttachments from "./ComposeAttachments";
 
 export default function ComposePanel() {
 	const { mailboxId, folder } = useParams<{
@@ -30,6 +31,7 @@ export default function ComposePanel() {
 		error,
 		isSavingDraft,
 		isSending,
+		isBusy, isReadingAttachments, attachments, addAttachments, removeAttachment,
 		formTitle,
 		handleSaveDraft,
 		handleSend,
@@ -50,7 +52,7 @@ export default function ComposePanel() {
 						size="sm"
 						icon={<XIcon size={18} />}
 						onClick={closeCompose}
-						disabled={isSending}
+						disabled={isBusy}
 						aria-label="Close compose"
 					/>
 				</div>
@@ -60,7 +62,7 @@ export default function ComposePanel() {
 				onSubmit={(e) => handleSend(e, closePanel)}
 				className="flex flex-col flex-1 min-h-0 overflow-y-auto"
 			>
-				<div className="p-4 md:p-6 space-y-4">
+				<fieldset disabled={isBusy} className="p-4 md:p-6 space-y-4 min-w-0">
 					{error && <Banner variant="error" text={error} />}
 
 					<div className="space-y-3">
@@ -72,6 +74,7 @@ export default function ComposePanel() {
 								<Input
 									type="text"
 									placeholder="recipient@example.com"
+									aria-label="To"
 									size="sm"
 									value={to}
 									onChange={(e) => setTo(e.target.value)}
@@ -99,6 +102,7 @@ export default function ComposePanel() {
 										type="text"
 										size="sm"
 										value={cc}
+										aria-label="CC"
 										onChange={(e) => setCc(e.target.value)}
 										placeholder="Separate multiple addresses with commas"
 									/>
@@ -116,6 +120,7 @@ export default function ComposePanel() {
 										type="text"
 										size="sm"
 										value={bcc}
+										aria-label="BCC"
 										onChange={(e) => setBcc(e.target.value)}
 										placeholder="Separate multiple addresses with commas"
 									/>
@@ -131,6 +136,7 @@ export default function ComposePanel() {
 								<Input
 									type="text"
 									placeholder="Email subject"
+									aria-label="Subject"
 									size="sm"
 									value={subject}
 									onChange={(e) => setSubject(e.target.value)}
@@ -144,14 +150,16 @@ export default function ComposePanel() {
 						<RichTextEditor
 							value={body}
 							onChange={setBody}
+							disabled={isBusy}
 						/>
 					</div>
-				</div>
+					<ComposeAttachments attachments={attachments} onAdd={addAttachments} onRemove={removeAttachment} busy={isBusy} reading={isReadingAttachments} />
+				</fieldset>
 
 				{/* Footer actions */}
 				<div className="mt-auto px-4 py-3 border-t border-kumo-line bg-kumo-fill/30 shrink-0 md:px-6">
 					<div className="flex items-center justify-between">
-						<Button type="button" variant="ghost" size="sm" onClick={closeCompose} disabled={isSending}>
+						<Button type="button" variant="ghost" size="sm" onClick={closeCompose} disabled={isBusy}>
 							Discard
 						</Button>
 						<div className="flex items-center gap-2">
@@ -160,7 +168,7 @@ export default function ComposePanel() {
 								variant="secondary"
 								size="sm"
 								loading={isSavingDraft}
-								disabled={isSending}
+								disabled={isBusy}
 								icon={<FloppyDiskIcon size={14} />}
 								onClick={handleSaveDraft}
 							>
@@ -171,7 +179,7 @@ export default function ComposePanel() {
 								variant="primary"
 								size="sm"
 								loading={isSending}
-								disabled={isSavingDraft || isSending}
+								disabled={isBusy}
 								icon={<PaperPlaneTiltIcon size={14} />}
 							>
 								{isSending ? "Sending..." : "Send"}

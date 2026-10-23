@@ -11,6 +11,7 @@
  * Zod schemas: used across route handlers to eliminate duplication.
  */
 import { z } from "zod";
+import { isValidBase64, MAX_ATTACHMENTS, MAX_OUTGOING_EMAIL_BYTES } from "../../shared/attachments";
 
 // ── TypeScript Interfaces ──────────────────────────────────────────
 
@@ -58,6 +59,23 @@ export const ErrorResponseSchema = z.object({
 	error: z.string(),
 });
 
+export const AttachmentInputSchema = z.union([
+	z.object({
+		content: z.string().max(MAX_OUTGOING_EMAIL_BYTES).refine(isValidBase64, "Invalid base64 attachment content"),
+		filename: z.string().min(1).max(1024),
+		type: z.string().max(255).default("application/octet-stream"),
+		disposition: z.enum(["attachment", "inline"]).default("attachment"),
+		contentId: z.string().max(998).regex(/^[^\r\n\x00]*$/).optional(),
+	}).strict(),
+	z.object({
+		emailId: z.string().min(1).max(255),
+		attachmentId: z.string().min(1).max(255),
+		disposition: z.enum(["attachment", "inline"]).optional(),
+	}).strict(),
+]);
+
+export const AttachmentsSchema = z.array(AttachmentInputSchema).max(MAX_ATTACHMENTS).optional();
+
 export const SendEmailRequestSchema = z
 	.object({
 		to: RecipientFieldSchema,
@@ -70,22 +88,12 @@ export const SendEmailRequestSchema = z
 		subject: z.string(),
 		html: z.string().optional(),
 		text: z.string().optional(),
-		attachments: z
-			.array(
-				z.object({
-					content: z.string(), // base64 encoded
-					filename: z.string(),
-					type: z.string(),
-					disposition: z.enum(["attachment", "inline"]),
-					contentId: z.string().optional(),
-				}),
-			)
-			.optional(),
+		attachments: AttachmentsSchema,
 		in_reply_to: z.string().optional(),
 		references: z.array(z.string()).optional(),
 		thread_id: z.string().optional(),
 	})
-	.refine((data) => data.html || data.text, {
+	.refine((data) => data.html || data.text || data.attachments?.length, {
 		message: "Either 'html' or 'text' must be provided",
 	});
 

@@ -2,7 +2,8 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-import { Button, Dialog } from "@cloudflare/kumo";
+import { Banner, Button, Dialog } from "@cloudflare/kumo";
+import { useEffect, useState } from "react";
 import { downloadFile } from "~/lib/utils";
 import type { Email } from "~/types";
 
@@ -62,6 +63,8 @@ export default function EmailPanelDialogs({
 	onClosePreview,
 }: EmailPanelDialogsProps) {
 	const sourceHeaders = sourceViewEmail ? getSourceHeaders(sourceViewEmail) : [];
+	const [imageFailed, setImageFailed] = useState(false);
+	useEffect(() => setImageFailed(false), [previewImage?.url]);
 
 	return (
 		<>
@@ -126,11 +129,12 @@ export default function EmailPanelDialogs({
 					<Dialog.Title>{previewImage?.filename}</Dialog.Title>
 					{previewImage && (
 						<div className="mt-4 flex flex-col items-center justify-center bg-kumo-tint/30 rounded-lg p-4 min-h-[200px]">
-							<img
+							{imageFailed ? <Banner variant="error" text="Unable to preview this image. Try downloading the original file." /> : <img
 								src={previewImage.url}
 								alt={previewImage.filename}
 								className="max-w-full max-h-[70vh] object-contain rounded shadow-sm"
-							/>
+								onError={() => setImageFailed(true)}
+							/>}
 						</div>
 					)}
 					<div className="flex justify-between items-center mt-4">
@@ -139,7 +143,7 @@ export default function EmailPanelDialogs({
 							size="sm"
 							onClick={() => {
 								if (previewImage) {
-									downloadFile(previewImage.url, previewImage.filename);
+									downloadFile(`${previewImage.url}?download=1`, previewImage.filename);
 								}
 							}}
 						>

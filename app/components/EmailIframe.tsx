@@ -4,6 +4,7 @@
 
 import DOMPurify from "dompurify";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { bytesToBase64 } from "../../shared/attachments";
 
 interface EmailIframeProps {
 	body: string;
@@ -57,7 +58,8 @@ export default function EmailIframe({ body, autoSize }: EmailIframeProps) {
 
 	useEffect(() => {
 		const iframe = iframeRef.current;
-		if (!iframe || !body) return;
+		if (!iframe) return;
+		const controller = new AbortController();
 
 		const cleanBody = DOMPurify.sanitize(body, {
 			USE_PROFILES: { html: true },
@@ -78,6 +80,7 @@ export default function EmailIframe({ body, autoSize }: EmailIframeProps) {
 					if (h > 0) parent.postMessage({ __emailIframeHeight: true, height: h }, "*");
 				}
 				reportHeight();
+				new ResizeObserver(reportHeight).observe(document.body);
 				setTimeout(reportHeight, 50);
 				setTimeout(reportHeight, 150);
 				setTimeout(reportHeight, 400);
@@ -86,12 +89,12 @@ export default function EmailIframe({ body, autoSize }: EmailIframeProps) {
 
 		// Use srcdoc so the iframe is truly sandboxed (no same-origin access).
 		// We can't use doc.write() because that requires allow-same-origin.
-		iframe.srcdoc = `<!DOCTYPE html>
+		const render = (html: string) => { iframe.srcdoc = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: cid: https:; script-src 'unsafe-inline';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob: https: ${window.location.origin}; script-src 'unsafe-inline';">
 <style>
 * { box-sizing: border-box; }
 html {
@@ -135,8 +138,35 @@ h1, h2, h3 { margin: 8px 0 4px; }
 ul, ol { padding-left: 20px; margin: 4px 0; }
 </style>
 </head>
-<body>${cleanBody}${heightScript}</body>
-</html>`;
+<body>${html}${heightScript}</body>
+</html>`; };
+		render(cleanBody);
+		// Fetch private CID images in the authenticated parent. The opaque iframe
+		// cannot reliably send same-site Access cookies for its own image requests.
+		const documentBody = new DOMParser().parseFromString(cleanBody, "text/html").body;
+		const images = [...documentBody.querySelectorAll("img")].filter((image) => {
+			const source = image.getAttribute("src") || "";
+			return source.startsWith("/api/v1/mailboxes/") && source.includes("/attachments/");
+		});
+		if (images.length) {
+			const loaded = new Map<string, Promise<string | null>>();
+			void Promise.all(images.map(async (image) => {
+				try {
+					const source = image.getAttribute("src")!;
+					if (!loaded.has(source)) loaded.set(source, (async () => {
+						const response = await fetch(source, { signal: controller.signal });
+						if (!response.ok) return null;
+						const blob = await response.blob();
+						if (!blob.type.startsWith("image/")) return null;
+						// Data URLs work in an opaque sandbox; parent-origin blob URLs do not.
+						return `data:${blob.type};base64,${bytesToBase64(new Uint8Array(await blob.arrayBuffer()))}`;
+					})());
+					const url = await loaded.get(source);
+					if (url && !controller.signal.aborted) image.src = url;
+				} catch { /* The attachment list still offers the original download. */ }
+			})).then(() => { if (!controller.signal.aborted) render(documentBody.innerHTML); });
+		}
+		return () => controller.abort();
 	}, [body, autoSize]);
 
 	return (

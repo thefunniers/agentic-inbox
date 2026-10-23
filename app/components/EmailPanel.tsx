@@ -18,6 +18,7 @@ import { useFolders } from "~/queries/folders";
 import { useMailbox } from "~/queries/mailboxes";
 import { useUIStore } from "~/hooks/useUIStore";
 import type { Email, Folder, Mailbox } from "~/types";
+import { storedComposeAttachments } from "~/lib/compose-attachments";
 
 function EmailPanelSkeleton() {
 	return (
@@ -108,10 +109,10 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 
 	const handleSendDraft = async (draftMsg?: Email) => {
 		let target = draftMsg || email;
-		if (!mailboxId || !currentMailbox) return;
+		if (!mailboxId || !currentMailbox || isSending) return;
 		setIsSending(true);
 		try {
-			if (!target.recipient || !target.subject) { try { const fresh = await api.getEmail(mailboxId, target.id) as Email; if (fresh) target = fresh; } catch {} }
+			target = await api.getEmail(mailboxId, target.id);
 			if (!target.recipient) { toastManager.add({ title: "Cannot send: no recipient set on this draft.", variant: "error" }); return; }
 			const toRecipients = splitEmailList(target.recipient);
 			if (toRecipients.length === 0) { toastManager.add({ title: "Cannot send: no valid recipient set on this draft.", variant: "error" }); return; }
@@ -126,6 +127,7 @@ export default function EmailPanel({ emailId }: { emailId: string }) {
 				subject: target.subject || "(no subject)",
 				html: target.body || "",
 				text: target.body ? target.body.replace(/<[^>]*>/g, "").trim() : "",
+				attachments: storedComposeAttachments(target.id, target.attachments).map((file) => file.input),
 			};
 			if (originalEmail) await replyMut.mutateAsync({ mailboxId, emailId: originalEmail.id, email: emailData }); else await sendEmailMut.mutateAsync({ mailboxId, email: emailData });
 			await deleteEmailMut.mutateAsync({ mailboxId, id: target.id });

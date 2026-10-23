@@ -4,10 +4,11 @@
 
 import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
+import { bodyLimit } from "hono/body-limit";
 import PostalMime from "postal-mime";
 import { z } from "zod";
-import { sendEmail } from "./email-sender";
-import { storeAttachments, type StoredAttachment } from "./lib/attachments";
+import { attachmentHeaders, attachmentKey, AttachmentError, deleteAttachments, resolveAttachments, storeAttachments, storeBinaryAttachments } from "./lib/attachments";
+import { deliverStoredEmail } from "./lib/delivery";
 import {
 	validateSender,
 	SenderValidationError,
@@ -15,7 +16,7 @@ import {
 	buildThreadingHeaders,
 	listMailboxes,
 } from "./lib/email-helpers";
-import { SendEmailRequestSchema } from "./lib/schemas";
+import { AttachmentsSchema, SendEmailRequestSchema } from "./lib/schemas";
 import { handleReplyEmail, handleForwardEmail } from "./routes/reply-forward";
 import { Folders } from "../shared/folders";
 import type { Env } from "./types";
@@ -42,6 +43,7 @@ const DraftBody = z.object({
 	in_reply_to: z.string().optional(),
 	thread_id: z.string().optional(),
 	draft_id: z.string().optional(),
+	attachments: AttachmentsSchema,
 });
 
 // -- Helpers --------------------------------------------------------
@@ -68,6 +70,15 @@ function boolQuery(c: AppContext, key: string): boolean | undefined {
 // -- App & middleware -----------------------------------------------
 
 const app = new Hono<MailboxContext>();
+app.onError((error, c) => {
+	if (error instanceof z.ZodError) {
+		const issue = error.issues[0];
+		return c.json({ error: `Invalid ${issue.path.join(".") || "request"}: ${issue.message}` }, 400);
+	}
+	if (error instanceof AttachmentError) return c.json({ error: error.message }, error.status);
+	console.error("Email API error:", error);
+	return c.json({ error: "Unable to complete this request. Please try again." }, 500);
+});
 app.use("/api/*", cors({
 	origin: (origin) => {
 		// Same-origin requests have no Origin header — allow them.
@@ -84,6 +95,10 @@ app.use("/api/*", cors({
 	},
 }));
 app.use("/api/v1/mailboxes/:mailboxId/*", requireMailbox);
+app.use("/api/v1/mailboxes/:mailboxId/*", bodyLimit({
+	maxSize: 8 * 1024 * 1024,
+	onError: (c) => c.json({ error: "This request is too large. Email size is limited to 5 MiB, including encoding and message." }, 413),
+}));
 
 // -- Config ---------------------------------------------------------
 
@@ -182,7 +197,7 @@ app.get("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	const body = SendEmailRequestSchema.parse(await c.req.json());
-	const { to, cc, bcc, from, subject, html, text, attachments, in_reply_to, references, thread_id } = body;
+	const { to, cc, bcc, from, subject, html, text, in_reply_to, references, thread_id } = body;
 
 	let toStr: string, fromEmail: string, fromDomain: string;
 	try {
@@ -194,6 +209,7 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 
 	const { messageId, outgoingMessageId } = generateMessageId(fromDomain);
 	const stub = c.var.mailboxStub;
+	const attachments = await resolveAttachments(c.env.BUCKET, stub, body.attachments, body);
 	const rateLimitError = await (stub as any).checkSendRateLimit();
 	if (rateLimitError) return c.json({ error: rateLimitError }, 429);
 	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
@@ -213,32 +229,44 @@ app.post("/api/v1/mailboxes/:mailboxId/emails", async (c: AppContext) => {
 			{ key: "subject", value: subject }, { key: "date", value: new Date().toISOString() },
 			{ key: "message-id", value: `<${outgoingMessageId}>` },
 		]),
-	}, attachmentData);
+	}, attachmentData).catch(async (error) => {
+		await deleteAttachments(c.env.BUCKET, attachmentData);
+		throw error;
+	});
 
-	c.executionCtx.waitUntil(
-		sendEmail(c.env.EMAIL, {
+	await deliverStoredEmail(c.env, stub, messageId, {
 			to, cc, bcc, from, subject, html, text,
-			attachments: attachments?.map((att) => ({ content: att.content, filename: att.filename, type: att.type, disposition: att.disposition || "attachment", contentId: att.contentId })),
+			attachments,
 			...(in_reply_to ? { headers: buildThreadingHeaders(in_reply_to, references || []) } : {}),
-		}).catch((e) => console.error("Deferred email delivery failed:", (e as Error).message)),
-	);
+		}, attachmentData);
 	return c.json({ id: messageId, status: "sent" }, 202);
 });
 
 app.post("/api/v1/mailboxes/:mailboxId/drafts", async (c: AppContext) => {
 	const mailboxId = c.req.param("mailboxId")!;
-	const { to, cc, bcc, subject, body, in_reply_to, thread_id, draft_id } = DraftBody.parse(await c.req.json());
+	const { to, cc, bcc, subject, body, in_reply_to, thread_id, draft_id, attachments: inputs } = DraftBody.parse(await c.req.json());
 	const stub = c.var.mailboxStub;
-	if (draft_id) await stub.deleteEmail(draft_id); // not atomic — create-then-delete would be safer
-	const messageId = crypto.randomUUID();
+	let draftAttachments = inputs;
+	if (draft_id) {
+		const draft = await stub.getEmail(draft_id);
+		if (!draft || draft.folder_id !== Folders.DRAFT) return c.json({ error: "Draft not found" }, 404);
+		draftAttachments ??= draft.attachments.map((file) => ({ emailId: draft_id, attachmentId: file.id }));
+	}
+	const attachments = await resolveAttachments(c.env.BUCKET, stub, draftAttachments, { html: body, subject });
+	const messageId = draft_id || crypto.randomUUID();
 	const now = new Date().toISOString();
-	await stub.createEmail(Folders.DRAFT, {
+	const attachmentData = await storeAttachments(c.env.BUCKET, messageId, attachments);
+	const previousAttachments = await stub.saveDraft({
 		id: messageId, subject: subject || "", sender: mailboxId.toLowerCase(),
 		recipient: (to || "").toLowerCase(), cc: cc?.toLowerCase() || null, bcc: bcc?.toLowerCase() || null,
 		date: now, body, in_reply_to: in_reply_to || null, email_references: null,
 		thread_id: thread_id || in_reply_to || messageId,
-	}, []);
-	return c.json({ id: messageId, status: "draft", subject: subject || "", recipient: to || "", date: now }, 201);
+	}, attachmentData).catch(async (error) => {
+		await deleteAttachments(c.env.BUCKET, attachmentData);
+		throw error;
+	});
+	c.executionCtx.waitUntil(deleteAttachments(c.env.BUCKET, previousAttachments).catch((error) => console.error("Draft attachment cleanup failed:", error)));
+	return c.json({ id: messageId, status: "draft", subject: subject || "", recipient: to || "", date: now, attachments: attachmentData }, 201);
 });
 
 app.get("/api/v1/mailboxes/:mailboxId/emails/:id", async (c: AppContext) => {
@@ -329,13 +357,10 @@ app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/attachments/:attachmentId"
 	const emailId = c.req.param("emailId")!;
 	const attachmentId = c.req.param("attachmentId")!;
 	const attachment = await c.var.mailboxStub.getAttachment(attachmentId);
-	if (!attachment) return c.json({ error: "Attachment not found" }, 404);
-	const obj = await c.env.BUCKET.get(`attachments/${emailId}/${attachmentId}/${attachment.filename}`);
+	if (!attachment || attachment.email_id !== emailId) return c.json({ error: "Attachment not found" }, 404);
+	const obj = await c.env.BUCKET.get(attachmentKey(attachment));
 	if (!obj) return c.json({ error: "Attachment file not found" }, 404);
-	const headers = new Headers();
-	headers.set("Content-Type", attachment.mimetype);
-	const sanitized = attachment.filename.replace(/[\x00-\x1f"\\]/g, "_");
-	headers.set("Content-Disposition", `attachment; filename="${sanitized}"; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`);
+	const headers = attachmentHeaders(attachment, c.req.query("download") === "1");
 	return new Response(obj.body, { headers });
 });
 
@@ -389,18 +414,6 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number; to?: 
 
 	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
 
-	const attachmentData: StoredAttachment[] = [];
-	if (parsedEmail.attachments) {
-		for (const att of parsedEmail.attachments) {
-			const attId = crypto.randomUUID();
-			const filename = (att.filename || "untitled").replace(/[\/\\:*?"<>|\x00-\x1f]/g, "_");
-			await env.BUCKET.put(`attachments/${messageId}/${attId}/${filename}`, att.content);
-			attachmentData.push({ id: attId, email_id: messageId, filename, mimetype: att.mimeType,
-				size: typeof att.content === "string" ? att.content.length : att.content.byteLength,
-				content_id: att.contentId || null, disposition: att.disposition || "attachment" });
-		}
-	}
-
 	const extractMsgId = (s: string) => { const m = s.match(/<([^>]+)>/); return m ? m[1] : s.trim().split(/\s+/)[0]; };
 	const inReplyTo = parsedEmail.inReplyTo ? extractMsgId(parsedEmail.inReplyTo) : null;
 	const emailReferences = parsedEmail.references ? parsedEmail.references.split(/\s+/).filter(Boolean).map(extractMsgId) : [];
@@ -412,6 +425,10 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number; to?: 
 	}
 
 	const originalMessageId = parsedEmail.messageId ? extractMsgId(parsedEmail.messageId) : null;
+	const attachmentData = await storeBinaryAttachments(env.BUCKET, messageId, parsedEmail.attachments.map((att) => ({
+		filename: att.filename || "untitled", type: att.mimeType, disposition: att.disposition, contentId: att.contentId,
+		content: typeof att.content === "string" ? new TextEncoder().encode(att.content) : new Uint8Array(att.content),
+	})));
 
 	await stub.createEmail(Folders.INBOX, {
 		id: messageId, subject: parsedEmail.subject || "",
@@ -421,7 +438,10 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number; to?: 
 		body: parsedEmail.html || parsedEmail.text || "",
 		in_reply_to: inReplyTo, email_references: emailReferences.length > 0 ? JSON.stringify(emailReferences) : null,
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
-	}, attachmentData);
+	}, attachmentData).catch(async (error) => {
+		await deleteAttachments(env.BUCKET, attachmentData);
+		throw error;
+	});
 
 	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
 	ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
