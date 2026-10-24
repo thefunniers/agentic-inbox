@@ -14,7 +14,7 @@ interface MailboxProvisionEnv {
 	BUCKET: R2Bucket;
 	MAILBOX: {
 		idFromName(name: string): DurableObjectId;
-		get(id: DurableObjectId): { getFolders(): Promise<unknown> };
+		get(id: DurableObjectId): { getFolders(): Promise<unknown>; ensureFileIndex(mailboxId: string, reactivate?: boolean): Promise<void> };
 	};
 	DOMAINS?: string;
 }
@@ -51,5 +51,6 @@ export async function ensureMailbox(env: MailboxProvisionEnv, mailboxId: string)
 		}));
 	}
 	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
+	await stub.ensureFileIndex(mailboxId, true);
 	await stub.getFolders();
 }

@@ -3,7 +3,7 @@
 
 import { Banner, Button, Input, Loader } from "@cloudflare/kumo";
 import { ArrowClockwiseIcon, ArrowDownLeftIcon, ArrowUpRightIcon, CaretLeftIcon, CaretRightIcon, DownloadSimpleIcon, FileIcon, FilePdfIcon, FileTextIcon, FilesIcon, ImageIcon, MagnifyingGlassIcon } from "@phosphor-icons/react";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { getFilePreviewKind, type FileDirection, type MailboxFile, type GlobalFile } from "../../shared/files";
 import { getAttachmentUrl } from "../../shared/attachments";
@@ -46,13 +46,21 @@ export default function FileBrowser() {
 	const includeInline = searchParams.get("includeInline") === "true";
 	const requestedPage = Number(searchParams.get("page") || 1);
 	const page = Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+	const cursor = searchParams.get("cursor") || undefined;
+	const pageCursors = useRef(new Map<string, string>());
+	const filterKey = JSON.stringify([mailboxId, mailboxFilter, q, direction, includeInline]);
 	const [searchInput, setSearchInput] = useState(q);
 	const [previewFile, setPreviewFile] = useState<GlobalFile | null>(null);
 	const { selectedEmailId, isComposing, selectEmail, closePanel } = useUIStore();
-	const { data, isPending, isError, isFetching, refetch } = useFiles(mailboxId, { page, limit: 25, q, direction, includeInline }, mailboxFilter);
+	const { data, isPending, isError, isFetching, refetch } = useFiles(mailboxId, { page, limit: 25, q, direction, includeInline, cursor }, mailboxFilter);
 	const currentPage = data?.page || page;
 	const totalPages = data?.totalPages || 1;
 	const files = data?.files || [];
+	const building = data?.index?.state === "building";
+	useEffect(() => {
+		pageCursors.current.set(`${filterKey}:${page}`, cursor || "");
+		if (data?.nextCursor) pageCursors.current.set(`${filterKey}:${data.page + 1}`, data.nextCursor);
+	}, [filterKey, page, cursor, data]);
 
 	useEffect(() => setSearchInput(q), [q]);
 	useEffect(() => { closePanel(); setPreviewFile(null); }, [mailboxId, closePanel]);
@@ -61,6 +69,7 @@ export default function FileBrowser() {
 			setSearchParams((previous) => {
 				const next = new URLSearchParams(previous);
 				next.set("page", String(data.page));
+				next.delete("cursor");
 				return next;
 			}, { replace: true });
 		}
@@ -70,6 +79,7 @@ export default function FileBrowser() {
 		setSearchParams((previous) => {
 			const next = new URLSearchParams(previous);
 			next.delete("page");
+			next.delete("cursor");
 			for (const [key, value] of Object.entries(values)) {
 				if (value) next.set(key, value);
 				else next.delete(key);
@@ -77,6 +87,11 @@ export default function FileBrowser() {
 			return next;
 		});
 	};
+	useEffect(() => {
+		if (searchInput.trim() === q) return;
+		const timer = setTimeout(() => updateFilters({ q: searchInput.trim() }), 300);
+		return () => clearTimeout(timer);
+	}, [searchInput, q]);
 	const search = (event: FormEvent) => {
 		event.preventDefault();
 		updateFilters({ q: searchInput.trim() });
@@ -122,11 +137,12 @@ export default function FileBrowser() {
 					</div>
 				</div>
 				<div className="min-h-0 flex-1 overflow-y-auto" aria-busy={isFetching}>
+					{building && <p role="status" className="px-5 pt-4 text-sm text-kumo-subtle">正在整理历史附件，列表会自动更新。已整理 {data?.index?.completedMailboxes} / {data?.index?.discoveredMailboxes} 个邮箱。</p>}
 					{isPending ? <div className="flex justify-center p-12" role="status"><Loader /> <span className="sr-only">正在加载文件</span></div>
 						: isError ? <div className="p-5"><Banner variant="error" text="文件列表加载失败，请重试。" /><Button className="mt-3" variant="secondary" onClick={() => void refetch()}>重试</Button></div>
 							: files.length === 0 ? <div className="flex flex-col items-center px-5 py-16 text-center">
 								<FilesIcon size={36} className="text-kumo-subtle" />
-								<h2 className="mt-4 text-base font-medium text-kumo-default">{q || direction !== "all" ? "没有匹配的附件" : "还没有附件"}</h2>
+								<h2 className="mt-4 text-base font-medium text-kumo-default">{building ? "正在整理附件" : q || direction !== "all" ? "没有匹配的附件" : "还没有附件"}</h2>
 								<p className="mt-2 text-sm text-kumo-subtle">{q || direction !== "all" ? "试试其他关键词，或查看全部文件。" : "收发邮件中的附件会显示在这里。"}</p>
 								<p className="mt-1 text-xs text-kumo-subtle">草稿和垃圾箱中的附件不在此列表中。</p>
 								{(q || direction !== "all") && <Button className="mt-4" variant="secondary" onClick={() => updateFilters({ q: "", direction: "" })}>清除筛选</Button>}
@@ -153,11 +169,11 @@ export default function FileBrowser() {
 							</ul>}
 				</div>
 				{data && !isError && <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-kumo-line px-4 py-3 text-xs text-kumo-subtle">
-					<span role="status">共 {data.totalCount} 个文件{!mailboxId && ` · ${data.mailboxCount} 个邮箱`}</span>
+					<span role="status">{building ? "已找到" : "共"} {data.totalCount} 个文件{!mailboxId && ` · ${data.mailboxCount} 个邮箱`}</span>
 					<div className="flex items-center gap-2">
-						<Button variant="ghost" size="sm" shape="square" aria-label="上一页" icon={<CaretLeftIcon size={16} />} disabled={currentPage <= 1 || isFetching} onClick={() => updateFilters({ page: String(currentPage - 1) })} />
+						<Button variant="ghost" size="sm" shape="square" aria-label="上一页" icon={<CaretLeftIcon size={16} />} disabled={currentPage <= 1 || isFetching} onClick={() => updateFilters({ page: String(currentPage - 1), cursor: pageCursors.current.get(`${filterKey}:${currentPage - 1}`) || "" })} />
 						<span>{currentPage} / {totalPages}</span>
-						<Button variant="ghost" size="sm" shape="square" aria-label="下一页" icon={<CaretRightIcon size={16} />} disabled={currentPage >= totalPages || isFetching} onClick={() => updateFilters({ page: String(currentPage + 1) })} />
+						<Button variant="ghost" size="sm" shape="square" aria-label="下一页" icon={<CaretRightIcon size={16} />} disabled={currentPage >= totalPages || isFetching} onClick={() => updateFilters({ page: String(currentPage + 1), cursor: data.nextCursor || "" })} />
 					</div>
 				</div>}
 			</MailboxSplitView>

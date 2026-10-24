@@ -140,12 +140,12 @@ const api = {
 		post<void>(`/api/v1/mailboxes/${mailboxId}/threads/${threadId}/read`),
 	listFiles: (mailboxId: string, options: FileListOptions, signal?: AbortSignal) =>
 		get<FileListPage>(`/api/v1/mailboxes/${encodeURIComponent(mailboxId)}/files`, {
-			params: { page: String(options.page), limit: String(options.limit), q: options.q, direction: options.direction, includeInline: String(options.includeInline) },
+			params: { page: String(options.page), limit: String(options.limit), q: options.q, direction: options.direction, includeInline: String(options.includeInline), ...(options.cursor ? { cursor: options.cursor } : {}) },
 			signal,
 		}),
 	listGlobalFiles: (options: FileListOptions, mailbox?: string, signal?: AbortSignal) =>
 		get<GlobalFileListPage>("/api/v1/files", {
-			params: { page: String(options.page), limit: String(options.limit), q: options.q, direction: options.direction, includeInline: String(options.includeInline), ...(mailbox ? { mailbox } : {}) },
+			params: { page: String(options.page), limit: String(options.limit), q: options.q, direction: options.direction, includeInline: String(options.includeInline), ...(mailbox ? { mailbox } : {}), ...(options.cursor ? { cursor: options.cursor } : {}) },
 			signal,
 		}),
 	getAttachment: (mailboxId: string, emailId: string, attachmentId: string, signal?: AbortSignal) =>

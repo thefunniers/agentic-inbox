@@ -1,0 +1,13 @@
+{
+	"name": "file-index-tests",
+	"main": "file-index-worker.ts",
+	"compatibility_date": "2025-11-28",
+	"compatibility_flags": ["nodejs_compat"],
+	"vars": { "DOMAINS": "example.com", "EMAIL_ADDRESSES": [] },
+	"r2_buckets": [{ "binding": "BUCKET", "bucket_name": "file-index-tests" }],
+	"durable_objects": { "bindings": [
+		{ "name": "MAILBOX", "class_name": "MailboxDO" },
+		{ "name": "FILE_INDEX", "class_name": "FileIndexDO" }
+	] },
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["MailboxDO", "FileIndexDO"] }]
+}

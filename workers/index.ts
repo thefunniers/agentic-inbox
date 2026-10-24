@@ -25,6 +25,7 @@ import { ensureMailbox, isManagedMailboxAddress } from "./lib/provision-mailbox"
 import { listMailboxDirectory, MailboxDirectoryQuery } from "./lib/mailbox-directory";
 import { FileListQuery } from "./lib/files";
 import { listGlobalFiles } from "./lib/global-files";
+import { buildFileQuery } from "./lib/file-index";
 
 type AppContext = Context<MailboxContext>;
 
@@ -143,6 +144,7 @@ app.post("/api/v1/mailboxes", async (c) => {
 	const finalSettings = { ...defaultSettings, ...settings };
 	await c.env.BUCKET.put(key, JSON.stringify(finalSettings));
 	const stub = c.env.MAILBOX.get(c.env.MAILBOX.idFromName(email));
+	await stub.ensureFileIndex(email, true);
 	await stub.getFolders();
 	return c.json({ id: email, email, name, settings: finalSettings }, 201);
 });
@@ -167,7 +169,13 @@ app.delete("/api/v1/mailboxes/:mailboxId", async (c) => {
 	const mailboxId = c.req.param("mailboxId")!;
 	const key = `mailboxes/${mailboxId}.json`;
 	if (!(await c.env.BUCKET.head(key))) return c.json({ error: "Not found" }, 404);
-	await c.env.BUCKET.delete(key); // TODO: also delete DO data and R2 attachment blobs
+	try {
+		await c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mailboxId)).disableFileIndex(mailboxId);
+		await c.env.BUCKET.delete(key); // TODO: also delete DO data and R2 attachment blobs
+	} catch (error) {
+		await c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mailboxId)).ensureFileIndex(mailboxId, true);
+		throw error;
+	}
 	return c.body(null, 204);
 });
 
@@ -357,13 +365,14 @@ app.get("/api/v1/mailboxes/:mailboxId/search", async (c: AppContext) => {
 
 app.get("/api/v1/files", async (c) => {
 	const { mailbox, ...options } = FileListQuery.extend({ mailbox: z.string().trim().toLowerCase().email().max(320).optional() }).parse(c.req.query());
+	try { buildFileQuery(options, mailbox); }
+	catch { return c.json({ error: "Invalid file cursor or filters" }, 400); }
 	try {
 		if (mailbox) {
 			if (!(await c.env.BUCKET.head(`mailboxes/${mailbox}.json`))) return c.json({ error: "Mailbox not found" }, 404);
-			const result = await c.env.MAILBOX.get(c.env.MAILBOX.idFromName(mailbox)).listFiles(mailbox, options);
-			return c.json({ ...result, files: result.files.map((file) => ({ ...file, mailboxId: mailbox })), mailboxCount: 1 });
 		}
-		return c.json(await listGlobalFiles(c.env, options));
+		c.header("Cache-Control", "private, no-store");
+		return c.json(await listGlobalFiles(c.env, options, mailbox));
 	} catch (error) {
 		console.error("Unable to list global files:", (error as Error).message);
 		return c.json({ error: "Unable to load files from all mailboxes. Please try again." }, 503);
@@ -372,7 +381,16 @@ app.get("/api/v1/files", async (c) => {
 
 app.get("/api/v1/mailboxes/:mailboxId/files", async (c: AppContext) => {
 	const options = FileListQuery.parse(c.req.query());
-	return c.json(await c.var.mailboxStub.listFiles(c.req.param("mailboxId")!, options));
+	const mailboxId = c.req.param("mailboxId")!;
+	try { buildFileQuery(options, mailboxId); }
+	catch { return c.json({ error: "Invalid file cursor or filters" }, 400); }
+	try {
+		c.header("Cache-Control", "private, no-store");
+		return c.json(await listGlobalFiles(c.env, options, mailboxId));
+	} catch (error) {
+		console.error("Unable to list mailbox files:", error);
+		return c.json({ error: "Unable to load files. Please try again." }, 503);
+	}
 });
 
 app.get("/api/v1/mailboxes/:mailboxId/emails/:emailId/attachments/:attachmentId", async (c: AppContext) => {

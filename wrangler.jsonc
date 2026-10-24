@@ -46,6 +46,10 @@
 	"durable_objects": {
 		"bindings": [
 			{
+				"name": "FILE_INDEX",
+				"class_name": "FileIndexDO"
+			},
+			{
 				"name": "MAILBOX",
 				"class_name": "MailboxDO"
 			},
@@ -77,6 +81,10 @@
 			"new_sqlite_classes": [
 				"EmailMCP"
 			]
+		},
+		{
+			"tag": "v4",
+			"new_sqlite_classes": ["FileIndexDO"]
 		}
 	]
 }

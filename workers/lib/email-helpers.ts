@@ -21,13 +21,15 @@ import { emailBodyToText } from "../../shared/email-text";
  * Resolve a MailboxDO stub from a mailbox email address.
  * Replaces the repeated 3-line ns.idFromName / ns.get pattern.
  */
-export function getMailboxStub(
+export async function getMailboxStub(
 	env: Env,
 	mailboxId: string,
-): DurableObjectStub<MailboxDO> {
+): Promise<DurableObjectStub<MailboxDO>> {
 	const ns = env.MAILBOX;
 	const id = ns.idFromName(mailboxId);
-	return ns.get(id);
+	const stub = ns.get(id);
+	await stub.ensureFileIndex(mailboxId);
+	return stub;
 }
 
 // ── Mailbox Listing ────────────────────────────────────────────────

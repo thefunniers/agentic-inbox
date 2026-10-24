@@ -30,6 +30,7 @@ interface StoredEmail {
 }
 
 interface MailboxStub {
+	ensureFileIndex(mailboxId: string, reactivate?: boolean): Promise<void>;
 	getFolders(): Promise<unknown>;
 	getEmail(id: string): Promise<StoredEmail | null>;
 	findEmailByMessageId(messageId: string): Promise<{ id: string } | null>;

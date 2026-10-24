@@ -340,7 +340,7 @@ export class EmailAgent extends AIChatAgent<any> {
 
 		// Pre-read the email and thread so the agent has full context
 		// without needing to waste tool calls discovering it
-		const stub = getMailboxStub(env, emailData.mailboxId);
+		const stub = await getMailboxStub(env, emailData.mailboxId);
 
 		let emailBody = "";
 		let threadContext = "";
@@ -483,7 +483,7 @@ Based on the email content and thread context above, draft a reply using draft_r
 					// Inline text was entirely agent commentary, skip
 				} else {
 					const draftId = crypto.randomUUID();
-					const draftStub = getMailboxStub(env, emailData.mailboxId);
+					const draftStub = await getMailboxStub(env, emailData.mailboxId);
 					const reSubject = emailData.subject.startsWith("Re:")
 						? emailData.subject
 						: `Re: ${emailData.subject}`;

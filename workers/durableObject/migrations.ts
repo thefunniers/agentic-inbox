@@ -182,4 +182,33 @@ export const mailboxMigrations: Migration[] = [
                 ELSE NULL END;
         `),
 	},
+	{
+		name: "11_file_index_outbox",
+		sql: `
+			CREATE INDEX IF NOT EXISTS idx_attachments_email_id ON attachments(email_id);
+			CREATE TABLE file_index_state (
+				id INTEGER PRIMARY KEY CHECK(id = 1), mailbox_id TEXT NOT NULL,
+				generation INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1,
+				backfill_cursor TEXT NOT NULL DEFAULT '', backfill_done INTEGER NOT NULL DEFAULT 0,
+				ack_revision INTEGER NOT NULL DEFAULT 0
+			);
+			CREATE TABLE file_index_outbox (
+				revision INTEGER PRIMARY KEY AUTOINCREMENT, email_id TEXT NOT NULL UNIQUE
+			);
+			CREATE TRIGGER file_attachment_insert AFTER INSERT ON attachments BEGIN
+				INSERT OR REPLACE INTO file_index_outbox(email_id) VALUES(new.email_id);
+			END;
+			CREATE TRIGGER file_attachment_delete AFTER DELETE ON attachments BEGIN
+				INSERT OR REPLACE INTO file_index_outbox(email_id) VALUES(old.email_id);
+			END;
+			CREATE TRIGGER file_attachment_update AFTER UPDATE ON attachments BEGIN
+				INSERT OR REPLACE INTO file_index_outbox(email_id) VALUES(old.email_id);
+				INSERT OR REPLACE INTO file_index_outbox(email_id) VALUES(new.email_id);
+			END;
+			CREATE TRIGGER file_email_update AFTER UPDATE OF subject, sender, recipient, date, folder_id, thread_id, direction ON emails
+			WHEN EXISTS(SELECT 1 FROM attachments WHERE email_id = new.id) BEGIN
+				INSERT OR REPLACE INTO file_index_outbox(email_id) VALUES(new.id);
+			END;
+		`,
+	},
 ];

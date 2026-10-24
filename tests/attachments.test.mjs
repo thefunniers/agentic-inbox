@@ -48,6 +48,7 @@ function fixture(options = {}) {
     async delete(keys) { for (const key of [keys].flat()) objects.delete(key); },
   };
   const stub = {
+    async ensureFileIndex() {},
     async getEmail(id) { return emails.get(id) || null; },
     async getAttachment(id) { return [...emails.values()].flatMap(email => email.attachments).find(file => file.id === id) || null; },
     async getFolders() { return []; },

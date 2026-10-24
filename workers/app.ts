@@ -11,6 +11,7 @@ import { EmailMCP } from "./mcp";
 import type { Env } from "./types";
 
 export { MailboxDO } from "./durableObject";
+export { FileIndexDO } from "./fileIndex";
 export { EmailAgent } from "./agent";
 export { EmailMCP } from "./mcp";
 

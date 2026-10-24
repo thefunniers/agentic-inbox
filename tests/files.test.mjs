@@ -14,7 +14,10 @@ const compiled = await build({
 		export { MailboxDO } from './workers/durableObject/index.ts';
 		export { mailboxMigrations } from './workers/durableObject/migrations.ts';
 		export { listGlobalFiles } from './workers/lib/global-files.ts';
-		export { getFilePreviewKind } from './shared/files.ts';`, resolveDir: process.cwd() },
+		export { getFilePreviewKind } from './shared/files.ts';
+		export { FileIndexDO } from './workers/fileIndex/index.ts';
+		export { FileIndexStore, FILE_INDEX_SCHEMA } from './workers/lib/file-index.ts';
+		export { FileIndexOutbox } from './workers/lib/file-index-outbox.ts';`, resolveDir: process.cwd() },
 	bundle: true, platform: "node", format: "esm", write: false,
 	plugins: [{ name: "test-durable-object-base", setup(builder) {
 		builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: "cloudflare:workers", namespace: "test" }));
@@ -23,43 +26,64 @@ const compiled = await build({
 });
 const path = join(directory, "worker.mjs");
 await writeFile(path, compiled.outputFiles[0].text);
-const { app, MailboxDO, mailboxMigrations, listGlobalFiles, getFilePreviewKind } = await import(pathToFileURL(path));
+const { app, MailboxDO, mailboxMigrations, listGlobalFiles, getFilePreviewKind, FileIndexDO, FileIndexStore, FILE_INDEX_SCHEMA, FileIndexOutbox } = await import(pathToFileURL(path));
 const defaults = { page: 1, limit: 25, q: "", direction: "all", includeInline: false };
+
+function storageFor(t) {
+	const db = new DatabaseSync(":memory:");
+	db.exec("PRAGMA foreign_keys=ON");
+	t.after(() => db.close());
+	let alarm = null;
+	const cursor = (rows) => ({ toArray: () => rows, raw: () => ({ toArray: () => rows.map((row) => Object.values(row)) }), [Symbol.iterator]: () => rows[Symbol.iterator]() });
+	return {
+		db,
+		sql: { exec(query, ...params) {
+			if (!params.length && !/^\s*(SELECT|WITH)\b/i.test(query)) { db.exec(query); return cursor([]); }
+			return cursor(db.prepare(query).all(...params));
+		} },
+		async getAlarm() { return alarm; },
+		async setAlarm(value) { alarm = value; },
+		async deleteAlarm() { alarm = null; },
+		transactionSync(fn) {
+			db.exec("BEGIN");
+			try { const result = fn(); db.exec("COMMIT"); return result; }
+			catch (error) { db.exec("ROLLBACK"); throw error; }
+		},
+	};
+}
 
 function fixture(t) {
 	const mailboxes = new Map();
 	const blobs = new Map();
+	const indexStorage = storageFor(t);
+	indexStorage.db.exec(FILE_INDEX_SCHEMA);
+	indexStorage.db.exec("UPDATE file_discovery SET complete=1");
+	const index = new FileIndexStore(indexStorage);
+	const sync = () => {
+		for (const [id, mailbox] of mailboxes) {
+			const outbox = new FileIndexOutbox(mailbox.ctx.storage);
+			outbox.initialize(id);
+			do { const batch = outbox.nextBatch(); index.apply(batch); outbox.acknowledge(batch); } while (outbox.pending());
+		}
+	};
 	const env = {
 		BUCKET: {
-			async list() { return { objects: [...mailboxes.keys()].map((id) => ({ key: `mailboxes/${id}.json` })), truncated: false }; },
+			async list() { assert.fail("file queries must not list R2"); },
 			async head(key) { return mailboxes.has(key.slice(10, -5)) ? {} : null; },
 			async get(key) { const blob = blobs.get(key); return blob ? { body: blob.stream(), size: blob.size } : null; },
 		},
 		MAILBOX: { idFromName: (id) => id, get: (id) => mailboxes.get(id) },
+		FILE_INDEX: { idFromName: (id) => id, get: () => ({ listFiles: (options, mailboxId) => index.list(options, mailboxId) }) },
 	};
 	return {
-		env, mailboxes, blobs,
+		env, mailboxes, blobs, index,
 		mailbox(id) {
-			const db = new DatabaseSync(":memory:");
-			db.exec("PRAGMA foreign_keys = ON");
-			t.after(() => db.close());
-			const cursor = (rows) => ({ toArray: () => rows, raw: () => ({ toArray: () => rows.map((row) => Object.values(row)) }), [Symbol.iterator]: () => rows[Symbol.iterator]() });
-			const storage = {
-				sql: { exec(query, ...params) {
-					if (!params.length && !/^\s*(SELECT|WITH)\b/i.test(query)) { db.exec(query); return cursor([]); }
-					return cursor(db.prepare(query).all(...params));
-				} },
-				transactionSync(fn) {
-					db.exec("BEGIN");
-					try { const result = fn(); db.exec("COMMIT"); return result; }
-					catch (error) { db.exec("ROLLBACK"); throw error; }
-				},
-			};
-			const mailbox = new MailboxDO({ storage }, {});
+			const mailbox = new MailboxDO({ storage: storageFor(t) }, {});
 			mailboxes.set(id, mailbox);
 			return mailbox;
 		},
-		request(path) { return app.request(path, { method: "GET" }, env); },
+		files(id, options) { sync(); return index.list(options, id); },
+		request(path) { sync(); return app.request(path, { method: "GET" }, env); },
 	};
 }
 
@@ -81,9 +105,9 @@ test("mailbox files include archived mail, filter direction after moves and excl
 	const all = await (await f.request("/api/v1/mailboxes/test@example.com/files")).json();
 	assert.equal(all.totalCount, 4);
 	assert.equal(all.files.some((file) => "body" in file), false);
-	assert.equal((await mailbox.listFiles("test@example.com", { ...defaults, direction: "sent" })).totalCount, 2);
-	assert.equal((await mailbox.listFiles("test@example.com", { ...defaults, direction: "received" })).totalCount, 2);
-	assert.equal((await mailbox.listFiles("test@example.com", { ...defaults, includeInline: true })).totalCount, 5);
+	assert.equal((await f.files("test@example.com", { ...defaults, direction: "sent" })).totalCount, 2);
+	assert.equal((await f.files("test@example.com", { ...defaults, direction: "received" })).totalCount, 2);
+	assert.equal((await f.files("test@example.com", { ...defaults, includeInline: true })).totalCount, 5);
 });
 
 test("self-addressed received mail and sent mail retain original directions after folder moves", async (t) => {
@@ -93,23 +117,23 @@ test("self-addressed received mail and sent mail retain original directions afte
 	await mailbox.moveEmail("self-received", "sent");
 	await add(mailbox, "sent-to-inbox", { sender: "test@example.com", folder: "sent" });
 	await mailbox.moveEmail("sent-to-inbox", "inbox");
-	assert.deepEqual((await mailbox.listFiles("test@example.com", { ...defaults, direction: "received" })).files.map(file => file.email_id), ["self-received"]);
-	assert.deepEqual((await mailbox.listFiles("test@example.com", { ...defaults, direction: "sent" })).files.map(file => file.email_id), ["sent-to-inbox"]);
+	assert.deepEqual((await f.files("test@example.com", { ...defaults, direction: "received" })).files.map(file => file.email_id), ["self-received"]);
+	assert.deepEqual((await f.files("test@example.com", { ...defaults, direction: "sent" })).files.map(file => file.email_id), ["sent-to-inbox"]);
 	// Pre-migration archive rows have no original direction. Keep exact-address
 	// inference so they remain available under the appropriate historical filter.
 	mailbox.ctx.storage.sql.exec("UPDATE emails SET folder_id = 'archive', direction = NULL, sender = 'Me <TEST@example.com>' WHERE id = 'sent-to-inbox'");
-	assert.equal((await mailbox.listFiles("test@example.com", { ...defaults, direction: "sent" })).totalCount, 1);
+	assert.equal((await f.files("test@example.com", { ...defaults, direction: "sent" })).totalCount, 1);
 });
 
 test("direction migration preserves historical message and attachment data", (t) => {
 	const db = new DatabaseSync(":memory:");
 	t.after(() => db.close());
-	for (const migration of mailboxMigrations.slice(0, -1)) db.exec(migration.sql);
+	for (const migration of mailboxMigrations.slice(0, mailboxMigrations.findIndex((m) => m.name === "10_preserve_email_direction"))) db.exec(migration.sql);
 	for (const folder of ["inbox", "sent", "archive", "draft", "trash"]) {
 		db.prepare("INSERT INTO emails (id, folder_id, subject, body) VALUES (?, ?, ?, ?)").run(folder, folder, "original", "unchanged");
 	}
 	db.prepare("INSERT INTO attachments (id, email_id, filename, mimetype, size) VALUES ('file', 'inbox', 'original.txt', 'text/plain', 42)").run();
-	db.exec(mailboxMigrations.at(-1).sql);
+	db.exec(mailboxMigrations.find((m) => m.name === "10_preserve_email_direction").sql);
 	assert.deepEqual(db.prepare("SELECT id, direction FROM emails ORDER BY id").all().map(row => [row.id, row.direction]), [
 		["archive", null], ["draft", null], ["inbox", "received"], ["sent", "sent"], ["trash", null],
 	]);
@@ -124,7 +148,7 @@ test("file search handles Unicode, long names, literal wildcard characters, subj
 	await add(mailbox, "match", { filename, subject: "Admission offer", recipient: "Contact@example.net" });
 	await add(mailbox, "other", { filename: "录取材料X1000.pdf" });
 	for (const q of [filename, "100%", "_", "' OR 1=1 --", "admission", "CONTACT@EXAMPLE.NET"]) {
-		const result = await mailbox.listFiles("test@example.com", { ...defaults, q });
+		const result = await f.files("test@example.com", { ...defaults, q });
 		assert.deepEqual(result.files.map((file) => file.email_id), ["match"]);
 	}
 });
@@ -147,10 +171,10 @@ test("global pagination merges entire mailbox pages, handles equal IDs and dates
 		all.push(...data.files);
 	}
 	assert.equal(new Set(all.map((file) => `${file.mailboxId}/${file.id}`)).size, 68);
-	assert.equal(all[0].mailboxId, "a@example.com");
+	assert.equal(all[0].mailboxId, "b@example.com");
 	assert.equal(all[0].id, "id-25-0");
-	assert.equal(all[25].mailboxId, "a@example.com");
-	assert.equal(all[26].mailboxId, "b@example.com");
+	assert.equal(all[25].mailboxId, "b@example.com");
+	assert.equal(all[26].mailboxId, "a@example.com");
 	assert.ok(all.every((file, i) => i === 0 || all[i - 1].date >= file.date));
 	const stale = await (await f.request("/api/v1/files?page=999999999999")).json();
 	assert.equal(stale.page, 3);
@@ -176,36 +200,69 @@ test("global mailbox filter is exact, combined filters apply before totals and m
 	}
 });
 
-test("empty global view returns an empty first page; a failed mailbox never appears as a complete partial result", async (t) => {
+test("empty global view returns an empty first page; an unavailable index returns an error", async (t) => {
 	const f = fixture(t);
 	const empty = await (await f.request("/api/v1/files?page=40")).json();
-	assert.deepEqual(empty, { files: [], totalCount: 0, totalPages: 1, page: 1, limit: 25, mailboxCount: 0 });
+	assert.deepEqual(empty, { files: [], totalCount: 0, totalPages: 1, page: 1, limit: 25, mailboxCount: 0, nextCursor: null, index: { state: "ready", discoveredMailboxes: 0, completedMailboxes: 0 } });
 	await add(f.mailbox("good@example.com"), "file");
-	f.mailboxes.set("failed@example.com", { async listFiles() { throw new Error("Unavailable"); } });
+	f.env.FILE_INDEX.get = () => { throw new Error("Unavailable"); };
 	assert.equal((await f.request("/api/v1/files")).status, 503);
 });
 
-test("global listing covers more than 1000 mailboxes and bounds concurrent DO requests", async () => {
-	let active = 0;
-	let peak = 0;
+test("failed mailbox deletion reactivates indexing when either the index or directory fails", async (t) => {
+	t.mock.method(console, "error", () => {});
+	for (const failure of ["index", "directory"]) {
+		const operations = [];
+		const stub = {
+			async ensureFileIndex(id, reactivate) { if (reactivate) operations.push(`restore:${id}`); },
+			async disableFileIndex() { operations.push("disable"); if (failure === "index") throw new Error("index unavailable"); },
+		};
+		const response = await app.request("/api/v1/mailboxes/keep@example.com", { method: "DELETE" }, {
+			BUCKET: { async head() { return {}; }, async delete() { operations.push("delete"); throw new Error("directory unavailable"); } },
+			MAILBOX: { idFromName: (id) => id, get: () => stub },
+		});
+		assert.equal(response.status, 500);
+		assert.deepEqual(operations, failure === "index"
+			? ["disable", "restore:keep@example.com"]
+			: ["disable", "delete", "restore:keep@example.com"]);
+	}
+});
+
+test("catalogue discovers more than 1000 mailboxes in bounded batches; reads never fan out", async (t) => {
+	let active = 0, peak = 0, listings = 0, calls = 0;
 	const seen = new Set();
-	const result = await listGlobalFiles({
-		BUCKET: { async list({ cursor }) {
-			const start = cursor ? 1000 : 0;
-			const end = cursor ? 1003 : 1000;
-			return { objects: Array.from({ length: end - start }, (_, i) => ({ key: `mailboxes/${start + i}@example.com.json` })), truncated: !cursor, cursor: cursor ? undefined : "next" };
-		} },
-		MAILBOX: { idFromName: (name) => name, get: (id) => ({ async listFiles() {
+	const env = {
+		BUCKET: {
+			async list({ cursor, limit }) {
+				listings++;
+				assert.ok(limit <= 100);
+				const start = Number(cursor || 0), end = Math.min(start + limit, 1003);
+				return { objects: Array.from({ length: end - start }, (_, i) => ({ key: `mailboxes/${start + i}@example.com.json` })), truncated: end < 1003, cursor: end < 1003 ? String(end) : undefined };
+			},
+			async head() { return {}; },
+		},
+		MAILBOX: { idFromName: (name) => name, get: (id) => ({ async ensureFileIndex() {
+			calls++;
 			seen.add(id);
 			peak = Math.max(peak, ++active);
 			await new Promise((resolve) => setImmediate(resolve));
 			active--;
-			return { files: id === "1002@example.com" ? [{ id: "last", email_id: "email", date: "2026-10-23" }] : [], totalCount: id === "1002@example.com" ? 1 : 0, totalPages: 1, page: 1, limit: 25 };
+			await index.applyChanges({ mailboxId: id, generation: 1, enabled: true, through: 1, complete: true, changes: id === "1002@example.com" ? [{ emailId: "email", revision: 1, files: [{ attachment_id: "last", email_id: "email", date: "2026-10-23", filename: "last.pdf", mimetype: "application/pdf", size: 1, disposition: null, direction: "received", subject: "", sender: "", recipient: "", folder_id: "inbox", thread_id: null }] }] : [] });
 		} }) },
-	}, defaults);
+	};
+	const storage = storageFor(t);
+	const index = new FileIndexDO({ storage }, env);
+	const before = await index.listFiles(defaults);
+	assert.equal(before.index.state, "building");
+	for (let i = 0; i < 210; i++) await index.alarm();
 	assert.equal(seen.size, 1003);
-	assert.ok(peak <= 6 && peak > 1);
-	assert.equal(result.files[0].mailboxId, "1002@example.com");
+	assert.ok(peak <= 5 && peak > 1);
+	assert.equal(listings, 11);
+	const read = await listGlobalFiles({ FILE_INDEX: { idFromName: (id) => id, get: () => index } }, { ...defaults, q: "last" });
+	assert.equal(read.files[0].mailboxId, "1002@example.com");
+	assert.equal(read.index.state, "ready");
+	assert.equal(calls, 1003);
+	assert.equal(listings, 11);
 });
 
 test("global preview and download use the owning mailbox and enforce email ownership", async (t) => {
@@ -216,6 +273,63 @@ test("global preview and download use the owning mailbox and enforce email owner
 	assert.equal((await f.request("/api/v1/mailboxes/a@example.com/emails/a/attachments/a-0?download=1")).status, 200);
 	assert.equal((await f.request("/api/v1/mailboxes/b@example.com/emails/a/attachments/a-0")).status, 404);
 	assert.equal((await f.request("/api/v1/mailboxes/a@example.com/emails/wrong/attachments/a-0")).status, 404);
+});
+
+test("discovery retries failures and keeps work queued until the source finishes backfill", async (t) => {
+	let now = 100_000, calls = 0;
+	t.mock.method(Date, "now", () => now);
+	t.mock.method(console, "error", () => {});
+	const storage = storageFor(t);
+	const index = new FileIndexDO({ storage }, {
+		BUCKET: {
+			async list() { return { objects: [{ key: "mailboxes/retry@example.com.json" }], truncated: false }; },
+			async head() { return {}; },
+		},
+		MAILBOX: { idFromName: (id) => id, get: () => ({ async ensureFileIndex() {
+			if (++calls === 1) throw new Error("temporary source outage");
+		} }) },
+	});
+	await index.listFiles(defaults);
+	await index.alarm();
+	assert.equal(calls, 1);
+	assert.equal(storage.db.prepare("SELECT attempts FROM file_discovery_jobs").get().attempts, 1);
+	await index.listFiles(defaults, "retry@example.com");
+	await index.alarm();
+	assert.equal(calls, 1, "page polling must respect failure backoff");
+	now += 1000;
+	await index.alarm();
+	assert.equal(calls, 2);
+	assert.equal(storage.db.prepare("SELECT COUNT(*) AS n FROM file_discovery_jobs").get().n, 1);
+	const batch = { mailboxId: "retry@example.com", generation: 1, enabled: true, through: 1, complete: false, changes: [] };
+	await index.applyChanges(batch);
+	now += 30_000;
+	await index.alarm();
+	assert.equal(calls, 3, "an unfinished source is reminded after its alarm may have been interrupted");
+	assert.equal((await index.listFiles(defaults)).index.state, "building");
+	await index.applyChanges({ ...batch, through: 2, complete: true });
+	await index.alarm();
+	assert.equal(storage.db.prepare("SELECT COUNT(*) AS n FROM file_discovery_jobs").get().n, 0);
+	assert.equal(await storage.getAlarm(), null);
+	assert.equal((await index.listFiles(defaults)).index.state, "ready");
+});
+
+test("mailbox restart rearms an overdue sync without postponing it on sustained traffic", async (t) => {
+	let now = 100_000, recovery;
+	t.mock.method(Date, "now", () => now);
+	const storage = storageFor(t);
+	new MailboxDO({ storage }, {});
+	new FileIndexOutbox(storage).initialize("restart@example.com");
+	await storage.setAlarm(now - 1);
+	const mailbox = new MailboxDO({ storage, blockConcurrencyWhile(fn) { recovery = fn(); } }, { FILE_INDEX: {} });
+	await recovery;
+	const scheduled = await storage.getAlarm();
+	assert.equal(scheduled, now + 1000);
+	now += 200;
+	await mailbox.ensureFileIndex("restart@example.com");
+	assert.equal(await storage.getAlarm(), scheduled);
+	now += 200;
+	await mailbox.ensureFileIndex("restart@example.com");
+	assert.equal(await storage.getAlarm(), scheduled);
 });
 
 test("preview types allow images, PDFs and escaped text, with download fallback for executable formats", () => {

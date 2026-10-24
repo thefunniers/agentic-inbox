@@ -11,6 +11,7 @@ export interface FileListOptions {
 	q: string;
 	direction: FileDirection;
 	includeInline: boolean;
+	cursor?: string;
 }
 
 export interface MailboxFile {
@@ -26,6 +27,7 @@ export interface MailboxFile {
 	date: string | null;
 	folder_id: string;
 	direction: Exclude<FileDirection, "all">;
+	thread_id?: string | null;
 }
 
 export interface FileListPage {
@@ -34,6 +36,14 @@ export interface FileListPage {
 	totalPages: number;
 	page: number;
 	limit: number;
+	nextCursor?: string | null;
+	index?: FileIndexStatus;
+}
+
+export interface FileIndexStatus {
+	state: "building" | "ready";
+	completedMailboxes: number;
+	discoveredMailboxes: number;
 }
 
 export interface GlobalFile extends MailboxFile {

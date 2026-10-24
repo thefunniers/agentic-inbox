@@ -11,8 +11,8 @@ import { Folders } from "../../shared/folders";
 import type { Env } from "../types";
 import { applyMigrations, mailboxMigrations } from "./migrations";
 import { buildSearchConditions, type SearchFilterOptions } from "../lib/search";
-import { buildFileQuery } from "../lib/files";
-import type { FileListOptions, FileListPage, MailboxFile } from "../../shared/files";
+import { FILE_INDEX_NAME } from "../lib/file-index";
+import { FileIndexOutbox } from "../lib/file-index-outbox";
 
 /**
  * SQL expression to normalize email subjects by stripping common
@@ -92,11 +92,59 @@ interface AttachmentData {
 export class MailboxDO extends DurableObject<Env> {
 	declare __DURABLE_OBJECT_BRAND: never;
 	db: ReturnType<typeof drizzle>;
+	private fileOutbox: FileIndexOutbox;
+	private fileSyncInFlight: Promise<void> | null = null;
 
 	constructor(state: DurableObjectState, env: Env) {
 		super(state, env);
 		this.db = drizzle(this.ctx.storage, { schema });
 		applyMigrations(this.ctx.storage.sql, mailboxMigrations, this.ctx.storage);
+		this.fileOutbox = new FileIndexOutbox(this.ctx.storage);
+		if (this.env.FILE_INDEX && this.fileOutbox.pending()) {
+			this.ctx.blockConcurrencyWhile(() => this.scheduleFileIndex());
+		}
+	}
+
+	async ensureFileIndex(mailboxId: string, reactivate = false) {
+		this.fileOutbox.initialize(mailboxId, reactivate);
+		if (this.fileOutbox.pending()) await this.scheduleFileIndex();
+	}
+
+	private async scheduleFileIndex() {
+		// Local import-only deployments may omit the index binding. The durable
+		// journal is retained and will be replayed when indexing is available.
+		if (!this.env.FILE_INDEX || !this.fileOutbox.state()) return;
+		const due = Date.now() + 1000;
+		const scheduled = await this.ctx.storage.getAlarm();
+		// Sustained incoming traffic must not keep postponing the same alarm.
+		if (scheduled === null || scheduled <= Date.now() || scheduled > due) await this.ctx.storage.setAlarm(due);
+	}
+
+	async disableFileIndex(mailboxId: string) {
+		this.fileOutbox.initialize(mailboxId);
+		this.fileOutbox.disable();
+		await this.scheduleFileIndex();
+		if (this.env.FILE_INDEX) {
+			await this.env.FILE_INDEX.get(this.env.FILE_INDEX.idFromName(FILE_INDEX_NAME)).applyChanges(this.fileOutbox.nextBatch()!);
+		}
+	}
+
+	async alarm() {
+		if (!this.env.FILE_INDEX) return;
+		if (this.fileSyncInFlight) return this.fileSyncInFlight;
+		this.fileSyncInFlight = this.flushFileIndex();
+		try { await this.fileSyncInFlight; }
+		finally { this.fileSyncInFlight = null; }
+	}
+
+	private async flushFileIndex() {
+		await this.ctx.storage.setAlarm(Date.now() + 30_000);
+		const batch = this.fileOutbox.nextBatch();
+		if (!batch) { await this.ctx.storage.deleteAlarm(); return; }
+		await this.env.FILE_INDEX.get(this.env.FILE_INDEX.idFromName(FILE_INDEX_NAME)).applyChanges(batch);
+		this.fileOutbox.acknowledge(batch);
+		if (this.fileOutbox.pending() || this.fileOutbox.state().generation !== batch.generation) await this.scheduleFileIndex();
+		else await this.ctx.storage.deleteAlarm();
 	}
 
 	// ── Email CRUD (Drizzle) ───────────────────────────────────────
@@ -547,6 +595,7 @@ export class MailboxDO extends DurableObject<Env> {
 			.where(eq(schema.emails.id, id))
 			.run();
 
+		await this.scheduleFileIndex();
 		return emailAttachments;
 	}
 
@@ -558,20 +607,6 @@ export class MailboxDO extends DurableObject<Env> {
 				.where(eq(schema.attachments.id, id))
 				.get() ?? null
 		);
-	}
-
-	async listFiles(mailboxId: string, options: FileListOptions): Promise<FileListPage> {
-		const { source, where, params } = buildFileQuery(mailboxId, options);
-		const [{ total }] = this.ctx.storage.sql.exec<{ total: number }>(
-			`${source} SELECT COUNT(*) AS total FROM files ${where}`, ...params,
-		).toArray();
-		const totalPages = Math.max(1, Math.ceil(total / options.limit));
-		const page = Math.min(options.page, totalPages);
-		const files = this.ctx.storage.sql.exec<MailboxFile & Record<string, string | number | null>>(
-			`${source} SELECT * FROM files ${where} ORDER BY date DESC, email_id DESC, id DESC LIMIT ? OFFSET ?`,
-			...params, options.limit, (page - 1) * options.limit,
-		).toArray();
-		return { files, totalCount: total, totalPages, page, limit: options.limit };
 	}
 
 	// ── Folders (Drizzle) ──────────────────────────────────────────
@@ -632,6 +667,7 @@ export class MailboxDO extends DurableObject<Env> {
 			.where(eq(schema.folders.id, id))
 			.run();
 
+		await this.scheduleFileIndex();
 		return true;
 	}
 
@@ -650,6 +686,7 @@ export class MailboxDO extends DurableObject<Env> {
 			.where(eq(schema.emails.id, id))
 			.run();
 
+		await this.scheduleFileIndex();
 		return true;
 	}
 
@@ -796,10 +833,11 @@ export class MailboxDO extends DurableObject<Env> {
 		attachments: AttachmentData[],
 	) {
 		this.ctx.storage.transactionSync(() => this.insertEmail(folder, email, attachments));
+		if (attachments.length > 0) await this.scheduleFileIndex();
 	}
 
 	async saveDraft(email: EmailData, attachments: AttachmentData[]) {
-		return this.ctx.storage.transactionSync(() => {
+		const oldAttachments = this.ctx.storage.transactionSync(() => {
 			const previous = this.db.select().from(schema.emails).where(eq(schema.emails.id, email.id)).get();
 			if (previous && previous.folder_id !== Folders.DRAFT) throw new Error("Only drafts can be replaced");
 			const oldAttachments = this.db.select().from(schema.attachments).where(eq(schema.attachments.email_id, email.id)).all();
@@ -808,6 +846,8 @@ export class MailboxDO extends DurableObject<Env> {
 			this.insertEmail(Folders.DRAFT, email, attachments);
 			return oldAttachments;
 		});
+		await this.scheduleFileIndex();
+		return oldAttachments;
 	}
 
 	private insertEmail(folder: string, email: EmailData, attachments: AttachmentData[]) {

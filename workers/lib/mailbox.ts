@@ -34,6 +34,7 @@ export const requireMailbox = createMiddleware<MailboxContext>(async (c, next) =
 	const ns = c.env.MAILBOX;
 	const id = ns.idFromName(mailboxId);
 	const stub = ns.get(id);
+	if (["POST", "PUT", "DELETE"].includes(c.req.method)) await stub.ensureFileIndex(mailboxId);
 
 	c.set("mailboxStub", stub);
 	
