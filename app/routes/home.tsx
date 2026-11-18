@@ -41,6 +41,16 @@ export function meta() {
 
 export default function HomeRoute() {
 	const toastManager = useKumoToastManager();
+	const { data: backupAttention, isError: backupStatusError } = useQuery({
+		queryKey: ["backup-attention"],
+		queryFn: async () => {
+			const r = await fetch("/api/v1/deliveries?attention=true");
+			if (!r.ok) throw new Error("副本状态加载失败");
+			return r.json() as Promise<{ deliveries: { state: string }[]; cursor: string | null }>;
+		},
+		refetchInterval: 30000,
+	});
+	const backupNeedsAttention = backupStatusError || backupAttention?.deliveries.some(d => d.state !== "submitted");
 	const createMailbox = useCreateMailbox();
 	const deleteMailbox = useDeleteMailbox();
 	const [searchParams, setSearchParams] = useSearchParams();
@@ -204,8 +214,11 @@ export default function HomeRoute() {
 		<div className="min-h-screen bg-kumo-recessed">
 			<div className="mx-auto max-w-3xl px-4 py-8 md:px-6 md:py-12">
 				<div className="mb-6">
-					<div className="flex items-center justify-between gap-3">
+					<div className="flex flex-wrap items-center justify-between gap-3">
 						<h1 className="text-2xl font-bold text-kumo-default">邮箱目录</h1>
+						<RouterLink to="/deliveries" className="text-sm underline" role={backupNeedsAttention ? "alert" : undefined}>
+							来信副本投递{backupStatusError ? " · 状态暂不可用" : backupNeedsAttention ? " · 有待处理副本" : ""}
+						</RouterLink>
 						<RouterLink to="/files" className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-md border border-kumo-line px-3 py-2 text-sm text-kumo-default hover:bg-kumo-tint"><FilesIcon size={16} />全局文件</RouterLink>
 						{configData && !isConfigured && (
 							<Button
