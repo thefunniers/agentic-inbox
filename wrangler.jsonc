@@ -19,7 +19,9 @@
 		// Inbound copies stay on the verified Tencent mailboxes.
 		// @jdtogo.ai -> apply@jdtogo.com; @dev.jdtogo.ai -> dev@jdtogo.com.
 		"BACKUP_EMAIL": "apply@jdtogo.com",
-		"BACKUP_DEV_EMAIL": "dev@jdtogo.com"
+		"BACKUP_DEV_EMAIL": "dev@jdtogo.com",
+		"BACKUP_MODE": "notification",
+		"BACKUP_FROM": "inbox-notify@jdtogo.ai"
 	},
 	"routes": [
 		{
@@ -60,6 +62,10 @@
 			{
 				"name": "EMAIL_MCP",
 				"class_name": "EmailMCP"
+			},
+			{
+				"name": "BACKUP_DELIVERY",
+				"class_name": "BackupDeliveryDO"
 			}
 		]
 	},
@@ -85,6 +91,10 @@
 		{
 			"tag": "v4",
 			"new_sqlite_classes": ["FileIndexDO"]
+		},
+		{
+			"tag": "v5",
+			"new_sqlite_classes": ["BackupDeliveryDO"]
 		}
 	]
 }
