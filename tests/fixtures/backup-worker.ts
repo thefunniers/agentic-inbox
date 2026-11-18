@@ -7,6 +7,16 @@ export class BackupDeliveryDO extends Base {
 	constructor(ctx: DurableObjectState, env: any) {
 		const bucket = new Proxy(env.BUCKET, {
 			get(target, property) {
+				if (property === "put")
+					return async (key: string, ...args: any[]) => {
+						const failures =
+							(await ctx.storage.get<number>("indexWriteFailures")) || 0;
+						if (key.startsWith("delivery-index/") && failures > 0) {
+							await ctx.storage.put("indexWriteFailures", failures - 1);
+							throw new Error("Injected index write outage");
+						}
+						return target.put(key, ...args);
+					};
 				if (property === "delete")
 					return async (key: string | string[]) => {
 						const failures =
@@ -26,6 +36,18 @@ export class BackupDeliveryDO extends Base {
 			},
 		});
 		super(ctx, { ...env, BUCKET: bucket });
+	}
+	async failIndexWrites() {
+		await this.ctx.storage.put("indexWriteFailures", 8);
+	}
+	async consumeAlarm() {
+		if ((await this.ctx.storage.getAlarm()) === null)
+			throw new Error("No durable wakeup");
+		// Simulate consuming the scheduled alarm, then advance its logical due time.
+		// Unlike a direct alarm() call, an old alarm cannot make this test pass.
+		await this.ctx.storage.deleteAlarm();
+		const delivery = await this.advance();
+		return { delivery, alarm: await this.ctx.storage.getAlarm() };
 	}
 	async failCleanup() {
 		await this.ctx.storage.put("cleanupFailures", 2);
@@ -116,6 +138,12 @@ export default {
 				),
 			);
 		}
+		if (url.pathname === "/fail-index-writes") {
+			await stub.failIndexWrites();
+			return Response.json({ ok: true });
+		}
+		if (url.pathname === "/consume-alarm")
+			return Response.json(await stub.consumeAlarm());
 		if (url.pathname === "/fail-cleanup") {
 			await stub.failCleanup();
 			return Response.json({ ok: true });

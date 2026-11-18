@@ -108,19 +108,37 @@ export class BackupDeliveryDO extends DurableObject<Env> {
 			await this.cleanSubmittedIndex(d);
 			return;
 		}
-		// Immutable index permits discovery even when Inbox ingestion has failed.
-		await this.env.BUCKET.put(
-			`delivery-index/${d.mailbox}/${d.id}.json`,
-			JSON.stringify({ id: d.id, mailbox: d.mailbox }),
-		);
 		if (["failed", "uncertain"].includes(d.state)) return;
+		if (d.nextAttempt && d.nextAttempt > Date.now() + 1500) {
+			await this.ctx.storage.setAlarm(d.nextAttempt);
+			return;
+		}
+		// A consumed alarm must be replaced before external I/O, independently
+		// of the platform's bounded automatic retries.
+		const recoveryAt = Date.now() + 60_000;
+		await this.ctx.storage.setAlarm(recoveryAt);
+		try {
+			// Immutable index permits discovery even when Inbox ingestion fails.
+			await this.env.BUCKET.put(
+				`delivery-index/${d.mailbox}/${d.id}.json`,
+				JSON.stringify({ id: d.id, mailbox: d.mailbox }),
+			);
+		} catch (error) {
+			d.error = `投递索引写入失败，将自动重试：${String(error).slice(0, 500)}`;
+			d.nextAttempt = recoveryAt;
+			await this.ctx.storage.put("delivery", d);
+			console.error("Backup index write will retry", {
+				id: d.id,
+				error: d.error,
+			});
+			return;
+		}
 		if (d.sending) {
 			d.state = "uncertain";
 			d.error = "上次发送被中断，可能已经送达。请核对目标邮箱后再重试。";
 			await this.save(d, null);
 			return;
 		}
-		if (d.nextAttempt && d.nextAttempt > Date.now() + 1500) return;
 		let raw: ArrayBuffer;
 		try {
 			d.ingestAttempts++;

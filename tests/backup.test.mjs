@@ -55,9 +55,34 @@ test(
 			raw("normal"),
 		);
 		assert.notEqual(second.id, first.id);
+		const outageMailbox = "index-outage@dev.jdtogo.ai";
+		const outage = await call(`/ingest?mailbox=${outageMailbox}`, raw("rate"));
+		assert.equal(outage.state, "retrying");
+		const outageQuery = `?mailbox=${outageMailbox}&id=${outage.id}`;
+		await call("/fail-index-writes" + outageQuery);
+		for (let i = 0; i < 8; i++) {
+			const tick = await call("/consume-alarm" + outageQuery);
+			assert.equal(tick.delivery.state, "retrying");
+			assert.equal(tick.delivery.attempts, 1);
+			assert.equal(tick.delivery.inboxStored, true);
+			assert.match(tick.delivery.error, /索引写入失败/);
+			assert.ok(Number.isFinite(tick.alarm));
+			assert.equal(tick.delivery.nextAttempt, tick.alarm);
+		}
+		const resumed = await call("/consume-alarm" + outageQuery);
+		assert.equal(resumed.delivery.state, "submitted");
+		assert.equal(resumed.delivery.attempts, 2);
+		assert.equal(resumed.delivery.error, null);
+		assert.equal(resumed.alarm, null);
+		assert.equal((await call(`/emails?mailbox=${outageMailbox}`)).length, 1);
+		assert.equal((await call("/capture?id=" + outage.id)).to, "dev@jdtogo.com");
 		const rate = await call("/ingest", raw("rate"));
 		assert.equal(rate.state, "retrying");
 		assert.equal(rate.inboxStored, true);
+		const notDue = await call("/ingest", raw("rate"));
+		assert.equal(notDue.state, "retrying");
+		assert.equal(notDue.attempts, 1);
+		assert.equal(notDue.nextAttempt, rate.nextAttempt);
 		await call("/fail-cleanup?id=" + rate.id);
 		const retried = await call("/advance?id=" + rate.id);
 		assert.equal(retried.state, "submitted");
