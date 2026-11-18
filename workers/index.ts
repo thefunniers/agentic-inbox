@@ -424,7 +424,7 @@ async function streamToArrayBuffer(stream: ReadableStream, streamSize: number) {
 	return result;
 }
 
-async function receiveEmail(event: { raw: ReadableStream; rawSize: number; to?: string; from?: string }, env: Env, ctx: ExecutionContext) {
+async function receiveEmail(event: { raw: ReadableStream; rawSize: number; to?: string; from?: string; deliveryId?: string; receivedAt?: string }, env: Env, ctx: ExecutionContext) {
 	const rawEmail = await streamToArrayBuffer(event.raw, event.rawSize);
 	const parsedEmail = await new PostalMime().parse(rawEmail);
 
@@ -449,10 +449,11 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number; to?: 
 	}
 	if (!mailboxId) throw new Error("received email with no valid recipient address");
 
-	const messageId = crypto.randomUUID();
+	const messageId = event.deliveryId || crypto.randomUUID();
 	await ensureMailbox(env, mailboxId);
 
 	const stub = env.MAILBOX.get(env.MAILBOX.idFromName(mailboxId));
+	if (event.deliveryId && await stub.getEmail(event.deliveryId)) return;
 
 	const extractMsgId = (s: string) => { const m = s.match(/<([^>]+)>/); return m ? m[1] : s.trim().split(/\s+/)[0]; };
 	const inReplyTo = parsedEmail.inReplyTo ? extractMsgId(parsedEmail.inReplyTo) : null;
@@ -474,15 +475,19 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number; to?: 
 		id: messageId, subject: parsedEmail.subject || "",
 		sender: (parsedEmail.from?.address || "").toLowerCase(), recipient: allRecipients.join(", "),
 		cc: ccRecipients.join(", ") || null, bcc: bccRecipients.join(", ") || null,
-		date: new Date().toISOString(), // uses receive time, not the email's Date header
+		date: event.receivedAt || new Date().toISOString(), // uses receive time, not the email's Date header
 		body: parsedEmail.html || parsedEmail.text || "",
 		in_reply_to: inReplyTo, email_references: emailReferences.length > 0 ? JSON.stringify(emailReferences) : null,
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
 	}, attachmentData).catch(async (error) => {
-		await deleteAttachments(env.BUCKET, attachmentData);
+		// createEmail may commit before index scheduling or its RPC response fails.
+		// Only a confirmed absent row permits cleanup. If this read also fails,
+		// propagate that failure and retain the blobs until the outcome is known.
+		if (!await stub.getEmail(messageId)) await deleteAttachments(env.BUCKET, attachmentData);
 		throw error;
 	});
 
+	if (env.DEPLOYMENT_ENV === "dev" || !env.EMAIL_AGENT) return;
 	const agentStub = env.EMAIL_AGENT.get(env.EMAIL_AGENT.idFromName(mailboxId));
 	ctx.waitUntil(agentStub.fetch(new Request("https://agents/onNewEmail", {
 		method: "POST", headers: { "Content-Type": "application/json" },

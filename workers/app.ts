@@ -7,9 +7,12 @@ import { Hono } from "hono";
 import { jwtVerify, createRemoteJWKSet } from "jose";
 import { createRequestHandler } from "react-router";
 import { app as apiApp, receiveEmail } from "./index";
+import { acceptBackup } from "./backup";
+import { backupRoutes } from "./backup/routes";
 import { EmailMCP } from "./mcp";
 import type { Env } from "./types";
 
+export { BackupDeliveryDO } from "./backup";
 export { MailboxDO } from "./durableObject";
 export { FileIndexDO } from "./fileIndex";
 export { EmailAgent } from "./agent";
@@ -45,6 +48,14 @@ const app = new Hono<{ Bindings: Env }>();
 
 // Cloudflare Access JWT validation middleware (production only)
 app.use("*", async (c, next) => {
+	// Isolated dev deployment uses a dedicated test bearer; never active in production.
+	if (c.env.DEPLOYMENT_ENV === "dev") {
+		const token = c.env.DEV_TEST_TOKEN;
+		if (!token || c.req.header("authorization") !== `Bearer ${token}`) {
+			return c.text("Dev authentication required", 403);
+		}
+		return next();
+	}
 	// Skip validation in development
 	if (import.meta.env.DEV) {
 		return next();
@@ -93,6 +104,8 @@ app.all("/mcp/*", async (c) => {
 	return mcpHandler.fetch(c.req.raw, c.env, c.executionCtx as ExecutionContext);
 });
 
+app.route("/", backupRoutes);
+
 // Mount the API routes
 app.route("/", apiApp);
 
@@ -118,6 +131,10 @@ export default {
 		env: Env,
 		ctx: ExecutionContext,
 	) {
+		if (env.BACKUP_MODE === "notification") {
+			await acceptBackup(message, env);
+			return;
+		}
 		try {
 			// Preserve the current Tencent backup path during the cutover. The old
 			// router Worker remains deployed as the rollback target; this forwarding

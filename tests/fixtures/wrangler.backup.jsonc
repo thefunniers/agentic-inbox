@@ -1,0 +1,27 @@
+{
+	"name": "backup-tests",
+	"main": "backup-worker.ts",
+	"compatibility_date": "2025-11-28",
+	"compatibility_flags": ["nodejs_compat"],
+	"vars": {
+		"DOMAINS": "dev.jdtogo.ai",
+		"EMAIL_ADDRESSES": [],
+		"DEPLOYMENT_ENV": "dev",
+		"BACKUP_FROM": "inbox-notify@jdtogo.ai",
+		"BACKUP_DEV_EMAIL": "dev@jdtogo.com",
+	},
+	"r2_buckets": [{ "binding": "BUCKET", "bucket_name": "backup-tests" }],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "MAILBOX", "class_name": "MailboxDO" },
+			{ "name": "FILE_INDEX", "class_name": "FileIndexDO" },
+			{ "name": "BACKUP_DELIVERY", "class_name": "BackupDeliveryDO" },
+		],
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["MailboxDO", "FileIndexDO", "BackupDeliveryDO"],
+		},
+	],
+}
