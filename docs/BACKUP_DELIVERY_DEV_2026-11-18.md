@@ -12,7 +12,7 @@
 
 ## Dev 隔离与复现
 
-`wrangler.dev.jsonc` 使用独立 Worker `agentic-inbox-dev`、R2 `agentic-inbox-dev-backup` 和 DO 命名空间，域名为 `https://inbox-dev.jdtogo.ai`。仅接受 `@dev.jdtogo.ai`，发送绑定固定到 `dev@jdtogo.com`。没有切换现有 Email Routing 或生产 Worker。
+`wrangler.dev.jsonc` 使用独立 Worker `agentic-inbox-dev`、R2 `agentic-inbox-dev-backup` 和 DO 命名空间，域名为 `https://inbox-dev.jdtogo.ai`。仅接受 `@dev.jdtogo.ai`，发送绑定固定到 `dev@jdtogo.com`。dev 验收阶段没有切换现有 Email Routing 或生产 Worker；后续生产发布见下文。
 
 开发部署全部请求使用专用 `DEV_TEST_TOKEN` Bearer 鉴权；匿名访问返回 403。测试凭据由安全流程配置，禁止提交或贴进日志。生产仍使用原 Cloudflare Access 鉴权。
 
@@ -31,11 +31,19 @@ node scripts/test-backup-dev.mjs
 
 已验证：无 To 的邮件进入 dev Inbox；通知进入腾讯 dev 收件箱；下载腾讯收到的通知后，`original.eml` 的 472 字节与输入完全一致；重复注入无二次发送/重复入库；投递列表、空分页参数、未登录拒绝和生产收件地址拒绝均通过。workerd 覆盖重试耗尽、永久失败、发送结果未知和人工重试。
 
-## 上线前尚需确认
+## 生产发布与待确认事项
 
 腾讯测试邮件头报告 SPF pass，但同时报告自有域名 DKIM 验证异常及 `dmarc=none(permerror)`。Cloudflare 控制台显示发信域名 Enabled / DNS Configured；公共 DoH 能取到 DKIM 与 DMARC 记录；对腾讯导出的邮件独立验证，两组 DKIM 签名均通过。当前证据无法解释腾讯的认证结果，不能宣称认证验收全部通过，也不应盲目放宽 DMARC。需要后续再投递样本、核对腾讯收信日志，必要时由腾讯/Cloudflare 支持排查。
 
-生产 `wrangler.jsonc` 保持旧转发路径，本次没有启用新副本模式。通过 dev 验收并批准上线后，另行加入生产 `BACKUP_DELIVERY` 绑定和下一版本 SQLite DO migration，设置 `BACKUP_MODE=notification` 与 `BACKUP_FROM`，核对生产收件目标、发信额度、Access 以及真实 SMTP 路由。不要把 dev 的新命名空间 migration 覆盖生产已有迁移。切换后的第一封必须核对 apply 实收及邮件头。
+2026-11-18，用户明确要求先上线、认证问题待调研后处理。生产已部署合并提交 `2a7d566adb0125623aa0373663e38dbf2b2e6382`，版本 `23c5f178-ebfa-472d-8219-074b90764758`，启用新副本模式。
+
+本次将已发布的配置同步进 `wrangler.jsonc`：`BACKUP_MODE=notification`、`BACKUP_FROM=inbox-notify@jdtogo.ai`、`BACKUP_DELIVERY` 绑定及 v5 SQLite DO migration。保留 v1–v4、现有 R2、邮箱命名空间、Access 和收件目标；正式地址仍投递到 apply，dev 地址仍投递到 dev。此配置回写不再次部署，也不修改 DNS 或发送邮件。
+
+发布后读取 Cloudflare 版本元数据，确认四个原有 DO 命名空间 ID 与 Access 密钥绑定均保留，新绑定及 v5 已生效；生产主页匿名请求返回登录跳转（HTTP 302）。尚未验证上线后首封生产邮件的 apply 实收及邮件头，不能将配置核对视为端到端收信验收。首封实收和腾讯认证结果继续跟进。
+
+已部署版本的前后元数据、实际发布配置和部署日志保存在本机 uploads 的 `production-backup-release-20261118/`，不包含密钥值，不提交到仓库。常规 `npm run build` 生成的配置应与该次发布的变量、资源绑定及迁移一致；生产继续使用已有 Access 密钥，不引入 dev 测试令牌。
+
+配置回写验证：`npm run build` 和生成配置的 Wrangler `deploy --dry-run` 均通过；逐项比较生成配置与已发布配置，变量、DO/R2/发信绑定、全部迁移、路由及兼容性设置一致。没有重跑与本次配置改动无关的业务测试，没有再次执行实际部署。
 
 回退时先停止新流量进入通知模式，再检查已有未完成任务；仅删除 `BACKUP_MODE` 不会取消已持久化任务。不要删除 R2 原文、DO 任务或历史迁移。历史邮件不自动补发，确认未送达后才逐封处理。
 
@@ -44,7 +52,7 @@ node scripts/test-backup-dev.mjs
 - 入库 RPC 报错后先查询邮件是否已提交。只有明确未提交才清理本次附件；已提交或查询结果未知时保留附件并明确报错，随后稳定 ID 重试可安全去重。
 - 已提交发送的任务为索引清理保留持久化闹钟；R2 删除失败会记录错误并继续重试，清理不会再次发送通知。待处理查询过滤权威状态并跨页补足结果，不让已成功或已转为待执行的旧索引挡住后续失败。
 - 最小回归命令：`node --experimental-strip-types --test tests/attachments.test.mjs tests/backup.test.mjs`，26 项通过。将这组测试放回 `3dbc427` 的修复前源码，出现 3 项失败；修复后验证了提交前清理、提交后错误/状态查询失败时附件不丢、连续两次索引删除失败后恢复、超过 50 条残留索引后的告警可见。
-- 本次 `npx tsc -b` 与 dev 构建通过；既有正常投递与腾讯收信证据复用，不重复发送测试邮件。上线前的腾讯认证结果核对仍未完成。
+- 本次 `npx tsc -b` 与 dev 构建通过；既有正常投递与腾讯收信证据复用，不重复发送测试邮件。腾讯认证结果核对仍未完成，用户已决定先上线。
 
 ### 索引写入持续失败的恢复
 
