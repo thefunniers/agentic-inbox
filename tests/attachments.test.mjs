@@ -49,7 +49,10 @@ function fixture(options = {}) {
   };
   const stub = {
     async ensureFileIndex() {},
-    async getEmail(id) { return emails.get(id) || null; },
+    async getEmail(id) {
+      if (options.failReadAfterCommit && emails.has(id)) throw new Error('Commit status unavailable');
+      return emails.get(id) || null;
+    },
     async getAttachment(id) { return [...emails.values()].flatMap(email => email.attachments).find(file => file.id === id) || null; },
     async getFolders() { return []; },
     async findThreadBySubject() { return null; },
@@ -58,6 +61,7 @@ function fixture(options = {}) {
     async createEmail(folder, email, attachments) {
       if (options.failDatabase) throw new Error('Database unavailable');
       emails.set(email.id, { ...email, folder_id: folder, attachments });
+      if (options.failAfterCommit) throw new Error('Post-commit scheduling or RPC failed');
     },
     async saveDraft(email, attachments) {
       const old = emails.get(email.id)?.attachments || [];
@@ -111,9 +115,9 @@ function mimeMessage() {
   ].join('\r\n'));
 }
 
-async function receive(f) {
+async function receive(f, deliveryId) {
   const raw = mimeMessage();
-  await receiveEmail({ raw: new Blob([raw]).stream(), rawSize: raw.length, to: address, from: 'sender@example.net' }, f.env, f.ctx);
+  await receiveEmail({ raw: new Blob([raw]).stream(), rawSize: raw.length, to: address, from: 'sender@example.net', deliveryId }, f.env, f.ctx);
   await f.flush();
   return [...f.emails.values()][0];
 }
@@ -333,4 +337,34 @@ test('forward API includes source attachments by default and honors an explicit 
   const emptyResponse = await f.request(`/emails/${source.id}/forward`, { ...message, attachments: [] });
   assert.equal(emptyResponse.status, 202);
   assert.equal(f.sent[1].attachments, undefined);
+});
+
+for (const unreadable of [false, true]) {
+  test(`inbound retry preserves committed attachments when post-commit RPC fails (status unreadable: ${unreadable})`, async () => {
+    const f = fixture({ failAfterCommit: true, failReadAfterCommit: unreadable });
+    await assert.rejects(receive(f, 'stable-inbound'), unreadable ? /Commit status unavailable/ : /Post-commit/);
+    assert.equal(f.emails.size, 1);
+    assert.equal(attachmentKeys(f).length, 3);
+    const keys = attachmentKeys(f);
+    f.options.failReadAfterCommit = false;
+    const email = await receive(f, 'stable-inbound');
+    assert.equal(f.emails.size, 1);
+    assert.deepEqual(attachmentKeys(f), keys);
+    const originals = [pdfBytes, Buffer.from(png.content, 'base64'), Buffer.alloc(0)];
+    for (const [i, file] of email.attachments.entries()) {
+      const downloaded = await f.request(`/emails/${email.id}/attachments/${file.id}`, null, 'GET');
+      assert.equal(downloaded.status, 200);
+      assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), originals[i]);
+    }
+  });
+}
+test('inbound failure before commit cleans unreferenced blobs and can retry', async () => {
+  const f = fixture({ failDatabase: true });
+  await assert.rejects(receive(f, 'stable-inbound'), /Database unavailable/);
+  assert.equal(f.emails.size, 0);
+  assert.equal(attachmentKeys(f).length, 0);
+  f.options.failDatabase = false;
+  const email = await receive(f, 'stable-inbound');
+  assert.equal(email.attachments.length, 3);
+  assert.equal(attachmentKeys(f).length, 3);
 });

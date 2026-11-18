@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Env } from "../types";
 import { acceptBackup } from "./index";
+import { isAttentionState, type Delivery } from "./model";
 import { isManagedMailboxAddress } from "../lib/provision-mailbox";
 export const backupRoutes = new Hono<{ Bindings: Env }>();
 backupRoutes.get("/api/v1/deliveries", async (c) => {
@@ -11,23 +12,29 @@ backupRoutes.get("/api/v1/deliveries", async (c) => {
 		return c.json({ error: "Invalid mailbox" }, 400);
 	const attention = c.req.query("attention") === "true";
 	const prefix = attention ? "delivery-attention/" : "delivery-index/";
-	const page = await c.env.BUCKET.list({
-		prefix: `${prefix}${mailbox ? mailbox + "/" : ""}`,
-		limit: 50,
-		cursor: c.req.query("cursor") || undefined,
-	});
-	const deliveries = await Promise.all(
-		page.objects.map(async (o) => {
-			const name = o.key.slice(prefix.length, -".json".length);
-			return c.env.BACKUP_DELIVERY.get(
-				c.env.BACKUP_DELIVERY.idFromName(name),
-			).status();
-		}),
-	);
-	return c.json({
-		deliveries: deliveries.filter(Boolean),
-		cursor: page.truncated ? page.cursor : null,
-	});
+	const deliveries: Delivery[] = [];
+	let cursor = c.req.query("cursor") || undefined;
+	do {
+		const page = await c.env.BUCKET.list({
+			prefix: `${prefix}${mailbox ? mailbox + "/" : ""}`,
+			limit: 50 - deliveries.length,
+			cursor,
+		});
+		const states = await Promise.all(
+			page.objects.map(async (o) => {
+				const name = o.key.slice(prefix.length, -".json".length);
+				return c.env.BACKUP_DELIVERY.get(
+					c.env.BACKUP_DELIVERY.idFromName(name),
+				).status();
+			}),
+		);
+		for (const d of states) {
+			if (d && (!attention || isAttentionState(d.state))) deliveries.push(d);
+		}
+		cursor = page.truncated ? page.cursor : undefined;
+		// Stale derived keys must not occupy the page or conceal later failures.
+	} while (cursor && deliveries.length < 50);
+	return c.json({ deliveries, cursor: cursor || null });
 });
 backupRoutes.post("/api/v1/deliveries/:mailbox/:id/retry", async (c) => {
 	if (!c.env.BACKUP_DELIVERY) return c.notFound();

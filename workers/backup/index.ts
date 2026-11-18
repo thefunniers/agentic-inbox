@@ -5,6 +5,7 @@ import { receiveEmail } from "../index";
 import {
 	backupMessage,
 	classifyError,
+	isAttentionState,
 	deliveryId,
 	MAX_ATTEMPTS,
 	retryDelay,
@@ -56,7 +57,7 @@ export class BackupDeliveryDO extends DurableObject<Env> {
 		].slice(-100);
 		// Publish attention before committing; status remains authoritative.
 		const attentionKey = `delivery-attention/${d.mailbox}/${d.id}.json`;
-		if (["failed", "uncertain", "retrying"].includes(d.state)) {
+		if (isAttentionState(d.state)) {
 			await this.env.BUCKET.put(
 				attentionKey,
 				JSON.stringify({ id: d.id, mailbox: d.mailbox }),
@@ -64,11 +65,28 @@ export class BackupDeliveryDO extends DurableObject<Env> {
 		}
 		await this.ctx.storage.transaction(async (txn) => {
 			await txn.put("delivery", d);
-			if (next !== null) await txn.setAlarm(next);
+			// Cleanup has its own durable wakeup even though sending is complete.
+			if (d.state === "submitted") await txn.setAlarm(Date.now() + 60_000);
+			else if (next !== null) await txn.setAlarm(next);
 			else await txn.deleteAlarm();
 		});
-		if (d.state === "submitted")
-			await this.env.BUCKET.delete(attentionKey).catch(() => {});
+		if (d.state === "submitted") await this.cleanSubmittedIndex(d);
+	}
+	private async cleanSubmittedIndex(d: Delivery) {
+		// Rearm before I/O: repeated R2 outages must not exhaust alarm retries.
+		await this.ctx.storage.setAlarm(Date.now() + 60_000);
+		try {
+			await this.env.BUCKET.delete(
+				`delivery-attention/${d.mailbox}/${d.id}.json`,
+			);
+		} catch (error) {
+			console.error("Backup index cleanup will retry", {
+				id: d.id,
+				error: String(error),
+			});
+			return;
+		}
+		await this.ctx.storage.deleteAlarm();
 	}
 	async alarm() {
 		await this.process();
@@ -86,12 +104,16 @@ export class BackupDeliveryDO extends DurableObject<Env> {
 	private async run() {
 		const d = await this.status();
 		if (!d) return;
+		if (d.state === "submitted") {
+			await this.cleanSubmittedIndex(d);
+			return;
+		}
 		// Immutable index permits discovery even when Inbox ingestion has failed.
 		await this.env.BUCKET.put(
 			`delivery-index/${d.mailbox}/${d.id}.json`,
 			JSON.stringify({ id: d.id, mailbox: d.mailbox }),
 		);
-		if (["submitted", "failed", "uncertain"].includes(d.state)) return;
+		if (["failed", "uncertain"].includes(d.state)) return;
 		if (d.sending) {
 			d.state = "uncertain";
 			d.error = "上次发送被中断，可能已经送达。请核对目标邮箱后再重试。";

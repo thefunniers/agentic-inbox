@@ -58,9 +58,35 @@ test(
 		const rate = await call("/ingest", raw("rate"));
 		assert.equal(rate.state, "retrying");
 		assert.equal(rate.inboxStored, true);
+		await call("/fail-cleanup?id=" + rate.id);
 		const retried = await call("/advance?id=" + rate.id);
 		assert.equal(retried.state, "submitted");
 		assert.equal(retried.attempts, 2);
+		const cleanupPending = await call("/cleanup-status?id=" + rate.id);
+		assert.ok(cleanupPending.alarm > Date.now());
+		assert.equal(cleanupPending.indexed, true);
+		await call("/advance?id=" + rate.id);
+		const stillPending = await call("/cleanup-status?id=" + rate.id);
+		assert.ok(stillPending.alarm > Date.now());
+		assert.equal(stillPending.indexed, true);
+		const cleaned = await call("/advance?id=" + rate.id);
+		assert.equal(cleaned.state, "submitted");
+		assert.equal(cleaned.attempts, 2);
+		assert.equal(cleaned.providerId, retried.providerId);
+		assert.deepEqual(await call("/cleanup-status?id=" + rate.id), {
+			alarm: null,
+			indexed: false,
+		});
+		await call("/seed-stale-page");
+		const beyondStale = await call(
+			"/api/v1/deliveries?attention=true&mailbox=pagination%40dev.jdtogo.ai",
+		);
+		assert.deepEqual(
+			beyondStale.deliveries.map((d) => d.state),
+			["failed", "uncertain"],
+		);
+		assert.equal(beyondStale.cursor, null);
+
 		let exhausted = await call("/ingest", raw("exhaust"));
 		for (let i = 1; i < 5; i++)
 			exhausted = await call("/advance?id=" + exhausted.id);

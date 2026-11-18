@@ -480,7 +480,10 @@ async function receiveEmail(event: { raw: ReadableStream; rawSize: number; to?: 
 		in_reply_to: inReplyTo, email_references: emailReferences.length > 0 ? JSON.stringify(emailReferences) : null,
 		thread_id: threadId, message_id: originalMessageId, raw_headers: JSON.stringify(parsedEmail.headers),
 	}, attachmentData).catch(async (error) => {
-		await deleteAttachments(env.BUCKET, attachmentData);
+		// createEmail may commit before index scheduling or its RPC response fails.
+		// Only a confirmed absent row permits cleanup. If this read also fails,
+		// propagate that failure and retain the blobs until the outcome is known.
+		if (!await stub.getEmail(messageId)) await deleteAttachments(env.BUCKET, attachmentData);
 		throw error;
 	});
 

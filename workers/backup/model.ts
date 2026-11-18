@@ -90,3 +90,7 @@ export function backupMessage(d: Delivery, raw: ArrayBuffer) {
 		},
 	};
 }
+
+export function isAttentionState(state: DeliveryState) {
+	return state === "failed" || state === "uncertain" || state === "retrying";
+}
