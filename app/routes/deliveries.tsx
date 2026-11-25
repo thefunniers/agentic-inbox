@@ -6,6 +6,10 @@ import {
 	type Delivery,
 	type DeliveryMode,
 } from "../../workers/backup/model";
+import {
+	formatDeliveriesCsv,
+	formatDeliveriesJson,
+} from "../lib/delivery-export";
 
 function stateLabel(d: Delivery) {
 	const mode = deliveryMode(d);
@@ -27,11 +31,6 @@ const historyLabels = {
 	failed: "失败",
 	uncertain: "结果未知",
 };
-
-function csvCell(value: unknown) {
-	const text = String(value ?? "");
-	return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-}
 
 export default function Deliveries() {
 	const [attention, setAttention] = useState(true);
@@ -98,62 +97,10 @@ export default function Deliveries() {
 				all.push(...page.deliveries);
 				next = page.cursor;
 			}
-			all.sort((a, b) => b.receivedAt.localeCompare(a.receivedAt));
 			const content =
 				format === "json"
-					? JSON.stringify(
-							{
-								exportedAt: new Date().toISOString(),
-								totalCount: all.length,
-								items: all.map((d) => ({
-									id: d.id,
-									receivedAt: d.receivedAt,
-									mailbox: d.mailbox,
-									sender: d.sender,
-									subject: d.subject,
-									target: d.target,
-									state: d.state,
-									attempts: d.attempts,
-									inboxStored: d.inboxStored,
-									originalMessageId: d.originalMessageId,
-									fallbackFrom: d.fallbackFrom || null,
-								})),
-							},
-							null,
-							2,
-						)
-					: [
-							[
-								"receivedAt",
-								"mailbox",
-								"sender",
-								"subject",
-								"target",
-								"state",
-								"attempts",
-								"inboxStored",
-								"fallbackFrom",
-								"originalMessageId",
-								"id",
-							].join(","),
-							...all.map((d) =>
-								[
-									d.receivedAt,
-									d.mailbox,
-									d.sender,
-									d.subject,
-									d.target,
-									d.state,
-									d.attempts,
-									d.inboxStored,
-									d.fallbackFrom || "",
-									d.originalMessageId || "",
-									d.id,
-								]
-									.map(csvCell)
-									.join(","),
-							),
-						].join("\n");
+					? formatDeliveriesJson(all)
+					: formatDeliveriesCsv(all);
 			const blob = new Blob([content], {
 				type:
 					format === "json"
