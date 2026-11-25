@@ -61,3 +61,22 @@ node scripts/test-backup-dev.mjs
 复用已有附件恢复、腾讯实收和 EML 完整性证据。本次最小回归为 `node --experimental-strip-types --test tests/backup.test.mjs`：先让发送限流，再模拟连续 8 次索引写入失败；每次先消费旧闹钟，确认均创建新的持久化唤醒、发送次数保持不变，故障恢复后发送成功且没有重复入库。旧源码 `e543691` 在该回归上失败，修复后通过；类型检查和 dev 构建也通过。测试不依赖等待真实时间或外部邮件服务。
 
 实现遵循 [Cloudflare 闹钟异常处理说明](https://developers.cloudflare.com/durable-objects/api/alarms/)：需要持续恢复的操作不能仅依赖平台有限次数的异常重试。
+
+## 2026-11-25 回退至原样转发并保留持久化加固
+
+### 回退原因
+
+`notification` 包装格式将发往 `apply@jdtogo.com` 的邮件改写为 `inbox-notify@jdtogo.ai` 发出的纯文本模板 + `original.eml` 附件，且只有单跳 `Received` 头，导致直连腾讯企业邮箱的 `study-path-backend`（`MailRecipientResolver` 依赖双跳 `Received` 归属学生，`MailProcessingService` 跳过附件不展开 `original.eml`）、`submit-agent` 与 `cloudreg` 均无法正常匹配学生或提取正文/验证码。
+
+### 新模式（`BACKUP_MODE=forward`）行为
+
+- **原样转发**：入站先将原始 EML 持久化到 R2（`originals/<mailbox>/<id>.eml`），再通过稳定 `deliveryId` 幂等写入 Agentic Inbox（保留提交后异常不误删附件的修复），并调用 `message.forward(target)` 原样转发至 `apply@jdtogo.com` / `dev@jdtogo.com`，完整保留原 `From`、`To/Cc`、主题、正文/HTML、附件和 Cloudflare 双跳 `Received`。
+- **有限次平台重试与防退信**：`message.forward()` 遇明确临时错误（4xx/限流/暂不可用）时，由 `BackupDeliveryDO` 持久化计数，在前 2 次失败抛错触发 Cloudflare 平台重投（依赖去重不重复入库或重复转发，共最多 3 次）；达到上限、遇到永久错误或结果未知错误时不再抛错（避免向学校退信），写入 `delivery-attention/` 在首页与 `/deliveries` 告警。
+- **中断与漏重投兜底**：转发期间设 3 分钟 watchdog 闹钟；若发送中断标为 `uncertain`，若平台未触发后续重投则转为 `failed` 告警。若转发已成功但仅 Inbox 入库失败，闹钟和人工重试仅补入库，不会重复发信。
+- **人工回退与受影响清单导出**：`/deliveries` 展示投递模式（`原样转发` / `通知副本`）、支持按 `mode` 筛选、下载 `original.eml`、核对后手动触发通知副本回退，并提供一键导出 `mode=notification` 的 CSV/JSON 清单（2026-11-18 至 2026-11-25 期间未记录 `mode` 的旧 DO 记录自动识别为 `notification`）。不删除历史 R2 原文、DO 记录或 v1–v5 迁移。
+
+### 验证与上线记录（2026-11-25）
+
+- 本地检查：`npm run typecheck` 通过（同步修复 `workers/types.ts` 与 `wrangler types` 生成字面量类型的冲突）；`npm test` 全部 76 项通过（覆盖 workerd 原样转发成功/去重、临时失败抛错重投与第 3 次不抛错、watchdog 超时、永久/未知错误、并发不覆盖、仅入库失败重试不重发、告警索引写入故障恢复、手动回退发通知副本、旧 `notification` 记录兼容及 `mode` 筛选）。
+- Dev 验证：`agentic-inbox-dev` 已部署版本 `7d4d36bd-01ba-44a0-b4c0-3c600ed4c2eb`（`BACKUP_MODE=forward`），`scripts/test-backup-dev.mjs` 通过。
+- 生产上线：`agentic-inbox` 已部署版本 `d291f787-0089-4b3e-8efb-e7a0eca22287`（`2026-11-25T06:18:06Z`），`BACKUP_MODE=forward`。部署前逐项比对 `build/server/wrangler.json`，确认仅 `BACKUP_MODE` 由 `notification` 变为 `forward`；部署后读取线上版本元数据，确认 5 个 DO 命名空间 ID、`v5` 迁移、R2 绑定与 `POLICY_AUD`/`TEAM_DOMAIN` Access 密钥全部保留，未引入 dev 令牌，匿名访问返回 HTTP 302。本次未改动 DNS，也未自动补发历史邮件；首封真实生产 SMTP 来信的实收与下游匹配仍需跟进确认。

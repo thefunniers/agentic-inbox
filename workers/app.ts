@@ -7,7 +7,7 @@ import { Hono } from "hono";
 import { jwtVerify, createRemoteJWKSet } from "jose";
 import { createRequestHandler } from "react-router";
 import { app as apiApp, receiveEmail } from "./index";
-import { acceptBackup } from "./backup";
+import { acceptBackup, acceptForwardBackup } from "./backup";
 import { backupRoutes } from "./backup/routes";
 import { EmailMCP } from "./mcp";
 import type { Env } from "./types";
@@ -131,7 +131,12 @@ export default {
 		env: Env,
 		ctx: ExecutionContext,
 	) {
-		if (env.BACKUP_MODE === "notification") {
+		const backupMode = env.BACKUP_MODE as string | undefined;
+		if (backupMode === "forward") {
+			await acceptForwardBackup(message, env);
+			return;
+		}
+		if (backupMode === "notification") {
 			await acceptBackup(message, env);
 			return;
 		}

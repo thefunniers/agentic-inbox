@@ -1,3 +1,4 @@
+export type DeliveryMode = "forward" | "notification";
 export type DeliveryState =
 	| "pending"
 	| "retrying"
@@ -14,6 +15,11 @@ export interface Delivery {
 	from: string;
 	rawKey: string;
 	receivedAt: string;
+	mode?: DeliveryMode;
+	fallbackFrom?: "forward";
+	backupDelivered?: boolean;
+	indexWritten?: boolean;
+	attentionWritten?: boolean;
 	state: DeliveryState;
 	inboxStored: boolean;
 	attempts: number;
@@ -30,6 +36,11 @@ export interface Delivery {
 	sending?: boolean;
 }
 export const MAX_ATTEMPTS = 5;
+export const MAX_FORWARD_ATTEMPTS = 3;
+export const FORWARD_WATCHDOG_MS = 180_000;
+export function deliveryMode(d: Pick<Delivery, "mode">): DeliveryMode {
+	return d.mode || "notification";
+}
 export function retryDelay(attempt: number) {
 	return Math.min(60_000 * 2 ** (attempt - 1), 3_600_000);
 }
@@ -53,6 +64,27 @@ export function classifyError(
 	)
 		return "failed";
 	// Transport errors and generic delivery/internal failures may follow acceptance.
+	return "uncertain";
+}
+export function classifyForwardError(
+	error: unknown,
+): "retry" | "failed" | "uncertain" {
+	const base = classifyError(error);
+	if (base !== "uncertain") return base;
+	const message = error instanceof Error ? error.message : String(error ?? "");
+	if (
+		/\b4(?:21|50|51|52)\b|rate[\s_-]*limit|throttl|temporar|try again|unavailable|quota|busy|overload/i.test(
+			message,
+		)
+	)
+		return "retry";
+	if (
+		/\b5\d\d\b|unverified|not verified|invalid|rejected|permanent|suppressed|loop|too large|not allowed|disabled|forbidden|cannot forward|no such user|unknown user/i.test(
+			message,
+		)
+	)
+		return "failed";
+	// Transport drops, timeouts, or opaque internal errors may follow acceptance.
 	return "uncertain";
 }
 export async function deliveryId(
