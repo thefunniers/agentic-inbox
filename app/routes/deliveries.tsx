@@ -165,7 +165,7 @@ export default function Deliveries() {
 			a.href = url;
 			a.download = `notification-deliveries-${new Date().toISOString().slice(0, 10)}.${format}`;
 			a.click();
-			URL.revokeObjectURL(url);
+			setTimeout(() => URL.revokeObjectURL(url), 1000);
 		} catch (e) {
 			setError(e instanceof Error ? e.message : "导出失败，请重试。");
 		} finally {
