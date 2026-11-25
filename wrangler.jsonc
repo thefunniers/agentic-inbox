@@ -20,7 +20,7 @@
 		// @jdtogo.ai -> apply@jdtogo.com; @dev.jdtogo.ai -> dev@jdtogo.com.
 		"BACKUP_EMAIL": "apply@jdtogo.com",
 		"BACKUP_DEV_EMAIL": "dev@jdtogo.com",
-		"BACKUP_MODE": "notification",
+		"BACKUP_MODE": "forward",
 		"BACKUP_FROM": "inbox-notify@jdtogo.ai"
 	},
 	"routes": [

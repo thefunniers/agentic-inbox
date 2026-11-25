@@ -1,4 +1,8 @@
-import { BackupDeliveryDO as Base, acceptBackup } from "../../workers/backup";
+import {
+	BackupDeliveryDO as Base,
+	acceptBackup,
+	acceptForwardBackup,
+} from "../../workers/backup";
 import { backupRoutes } from "../../workers/backup/routes";
 import { backupMessage, type Delivery } from "../../workers/backup/model";
 export { MailboxDO } from "../../workers/durableObject";
@@ -14,6 +18,18 @@ export class BackupDeliveryDO extends Base {
 						if (key.startsWith("delivery-index/") && failures > 0) {
 							await ctx.storage.put("indexWriteFailures", failures - 1);
 							throw new Error("Injected index write outage");
+						}
+						const attentionFailures =
+							(await ctx.storage.get<number>("attentionWriteFailures")) || 0;
+						if (
+							key.startsWith("delivery-attention/") &&
+							attentionFailures > 0
+						) {
+							await ctx.storage.put(
+								"attentionWriteFailures",
+								attentionFailures - 1,
+							);
+							throw new Error("Injected attention write outage");
 						}
 						return target.put(key, ...args);
 					};
@@ -37,8 +53,23 @@ export class BackupDeliveryDO extends Base {
 		});
 		super(ctx, { ...env, BUCKET: bucket });
 	}
+	protected async storeInInbox(d: Delivery, raw: ArrayBuffer) {
+		const failures =
+			(await this.ctx.storage.get<number>("inboxWriteFailures")) || 0;
+		if (failures > 0) {
+			await this.ctx.storage.put("inboxWriteFailures", failures - 1);
+			throw new Error("Injected inbox write failure");
+		}
+		return super.storeInInbox(d, raw);
+	}
 	async failIndexWrites() {
 		await this.ctx.storage.put("indexWriteFailures", 8);
+	}
+	async failAttentionWrites(count = 2) {
+		await this.ctx.storage.put("attentionWriteFailures", count);
+	}
+	async failInboxWrites(count = 1) {
+		await this.ctx.storage.put("inboxWriteFailures", count);
 	}
 	async consumeAlarm() {
 		if ((await this.ctx.storage.getAlarm()) === null)
@@ -59,6 +90,9 @@ export class BackupDeliveryDO extends Base {
 			indexed: !!(await this.env.BUCKET.head(
 				`delivery-attention/${d.mailbox}/${d.id}.json`,
 			)),
+			discoverable: !!(await this.env.BUCKET.head(
+				`delivery-index/${d.mailbox}/${d.id}.json`,
+			)),
 		};
 	}
 	async seed(d: Delivery) {
@@ -67,6 +101,15 @@ export class BackupDeliveryDO extends Base {
 			`delivery-attention/${d.mailbox}/${d.id}.json`,
 			"{}",
 		);
+	}
+	async seedLegacyNotification(d: Delivery, raw: ArrayBuffer) {
+		await this.env.BUCKET.put(d.rawKey, raw);
+		await this.env.BUCKET.put(
+			`delivery-index/${d.mailbox}/${d.id}.json`,
+			JSON.stringify({ id: d.id, mailbox: d.mailbox }),
+		);
+		await this.ctx.storage.put("delivery", d);
+		await this.ctx.storage.setAlarm(Date.now() + 1000);
 	}
 
 	protected async sendCopy(d: Delivery, raw: ArrayBuffer) {
@@ -106,9 +149,21 @@ export class BackupDeliveryDO extends Base {
 		if (d) {
 			d.state = "pending";
 			d.sending = true;
+			d.nextAttempt = null;
 			await this.ctx.storage.put("delivery", d);
 		}
 		await this.alarm();
+		return this.status();
+	}
+	async forceSending(futureMs: number | null) {
+		const d = await this.status();
+		if (d) {
+			d.state = "pending";
+			d.backupDelivered = false;
+			d.sending = true;
+			d.nextAttempt = futureMs === null ? null : Date.now() + futureMs;
+			await this.ctx.storage.put("delivery", d);
+		}
 		return this.status();
 	}
 }
@@ -138,8 +193,97 @@ export default {
 				),
 			);
 		}
+		if (url.pathname === "/forward-ingest") {
+			const raw = await r.arrayBuffer();
+			const behavior = url.searchParams.get("behavior") || "ok";
+			const failInbox = Number(url.searchParams.get("failInbox") || "0");
+			const failAttention = Number(
+				url.searchParams.get("failAttention") || "0",
+			);
+			const preId = url.searchParams.get("preId");
+			if (preId && failInbox > 0) {
+				await env.BACKUP_DELIVERY.get(
+					env.BACKUP_DELIVERY.idFromName(`${mailbox}/${preId}`),
+				).failInboxWrites(failInbox);
+			}
+			if (preId && failAttention > 0) {
+				await env.BACKUP_DELIVERY.get(
+					env.BACKUP_DELIVERY.idFromName(`${mailbox}/${preId}`),
+				).failAttentionWrites(failAttention);
+			}
+			const forwarded: string[] = [];
+			try {
+				const delivery = await acceptForwardBackup(
+					{
+						to: mailbox,
+						from: "school@example.com",
+						raw: new Response(raw).body!,
+						rawSize: raw.byteLength,
+						async forward(target: string) {
+							forwarded.push(target);
+							if (behavior === "transient")
+								throw new Error("451 4.3.0 Temporary local problem");
+							if (behavior === "permanent")
+								throw new Error("550 5.1.1 Destination rejected");
+							if (behavior === "uncertain")
+								throw new Error("connection reset while forwarding");
+							await env.BUCKET.put(
+								`forward-capture/${mailbox}/${Date.now()}-${Math.random()}`,
+								JSON.stringify({ target, bytes: raw.byteLength }),
+							);
+						},
+					},
+					env,
+				);
+				return Response.json({ threw: false, forwarded, delivery });
+			} catch (error) {
+				return Response.json({
+					threw: true,
+					forwarded,
+					error: String(error),
+				});
+			}
+		}
+		if (url.pathname === "/seed-legacy") {
+			const raw = await r.arrayBuffer();
+			const legacyId = url.searchParams.get("id")!;
+			const legacyStub = env.BACKUP_DELIVERY.get(
+				env.BACKUP_DELIVERY.idFromName(`${mailbox}/${legacyId}`),
+			);
+			await legacyStub.seedLegacyNotification(
+				{
+					id: legacyId,
+					mailbox,
+					sender: "legacy-school@example.com",
+					subject: "Legacy notification in flight",
+					originalMessageId: "<legacy@example.com>",
+					target: "dev@jdtogo.com",
+					from: "inbox-notify@jdtogo.ai",
+					rawKey: `originals/${mailbox}/${legacyId}.eml`,
+					receivedAt: "2026-11-20T00:00:00.000Z",
+					state: "retrying",
+					inboxStored: true,
+					attempts: 1,
+					ingestAttempts: 1,
+					error: "rate limited",
+					nextAttempt: 0,
+				},
+				raw,
+			);
+			return Response.json({ ok: true });
+		}
 		if (url.pathname === "/fail-index-writes") {
 			await stub.failIndexWrites();
+			return Response.json({ ok: true });
+		}
+		if (url.pathname === "/fail-inbox-writes") {
+			await stub.failInboxWrites(Number(url.searchParams.get("count") || "1"));
+			return Response.json({ ok: true });
+		}
+		if (url.pathname === "/fail-attention-writes") {
+			await stub.failAttentionWrites(
+				Number(url.searchParams.get("count") || "2"),
+			);
 			return Response.json({ ok: true });
 		}
 		if (url.pathname === "/consume-alarm")
@@ -174,12 +318,22 @@ export default {
 		if (url.pathname === "/advance") return Response.json(await stub.advance());
 		if (url.pathname === "/interrupted")
 			return Response.json(await stub.interrupted());
+		if (url.pathname === "/force-sending")
+			return Response.json(
+				await stub.forceSending(
+					url.searchParams.has("futureMs")
+						? Number(url.searchParams.get("futureMs"))
+						: null,
+				),
+			);
 		if (url.pathname === "/retry") {
 			await stub.retry();
 			return Response.json(await stub.status());
 		}
-		if (url.pathname === "/capture")
-			return new Response(await (await env.BUCKET.get(`capture/${id}`)).text());
+		if (url.pathname === "/capture") {
+			const obj = await env.BUCKET.get(`capture/${id}`);
+			return obj ? new Response(await obj.text()) : new Response("null");
+		}
 		if (url.pathname === "/emails")
 			return Response.json(
 				await env.MAILBOX.get(env.MAILBOX.idFromName(mailbox)).getEmails({

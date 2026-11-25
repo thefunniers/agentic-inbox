@@ -1,8 +1,13 @@
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import type { Env } from "../types";
-import { acceptBackup } from "./index";
-import { isAttentionState, type Delivery } from "./model";
+import { acceptBackup, acceptForwardBackup } from "./index";
+import {
+	deliveryMode,
+	isAttentionState,
+	type Delivery,
+	type DeliveryMode,
+} from "./model";
 import { isManagedMailboxAddress } from "../lib/provision-mailbox";
 export const backupRoutes = new Hono<{ Bindings: Env }>();
 backupRoutes.get("/api/v1/deliveries", async (c) => {
@@ -10,6 +15,10 @@ backupRoutes.get("/api/v1/deliveries", async (c) => {
 	const mailbox = c.req.query("mailbox");
 	if (mailbox && !isManagedMailboxAddress(mailbox, c.env))
 		return c.json({ error: "Invalid mailbox" }, 400);
+	const modeParam = c.req.query("mode");
+	if (modeParam && modeParam !== "forward" && modeParam !== "notification")
+		return c.json({ error: "Invalid mode" }, 400);
+	const modeFilter = modeParam as DeliveryMode | undefined;
 	const attention = c.req.query("attention") === "true";
 	const prefix = attention ? "delivery-attention/" : "delivery-index/";
 	const deliveries: Delivery[] = [];
@@ -29,7 +38,13 @@ backupRoutes.get("/api/v1/deliveries", async (c) => {
 			}),
 		);
 		for (const d of states) {
-			if (d && (!attention || isAttentionState(d.state))) deliveries.push(d);
+			if (
+				d &&
+				(!attention || isAttentionState(d.state)) &&
+				(!modeFilter || deliveryMode(d) === modeFilter)
+			) {
+				deliveries.push(d);
+			}
 		}
 		cursor = page.truncated ? page.cursor : undefined;
 		// Stale derived keys must not occupy the page or conceal later failures.
@@ -78,6 +93,31 @@ backupRoutes.post(
 		if (!to.endsWith("@dev.jdtogo.ai") || !from || /[\r\n]/.test(from))
 			return c.text("Invalid envelope", 400);
 		const raw = await c.req.arrayBuffer();
+		const simForward = c.req.header("X-Dev-Forward-Result");
+		if (simForward) {
+			try {
+				const result = await acceptForwardBackup(
+					{
+						raw: new Response(raw).body!,
+						rawSize: raw.byteLength,
+						to,
+						from,
+						async forward() {
+							if (simForward === "ok") return;
+							if (simForward === "transient")
+								throw new Error("451 4.3.0 Temporary local problem");
+							if (simForward === "permanent")
+								throw new Error("550 5.1.1 Destination rejected");
+							throw new Error("connection reset during forward");
+						},
+					},
+					c.env,
+				);
+				return c.json(result, 202);
+			} catch (error) {
+				return c.json({ retriable: true, error: String(error) }, 503);
+			}
+		}
 		const result = await acceptBackup(
 			{ raw: new Response(raw).body!, rawSize: raw.byteLength, to, from },
 			c.env,
